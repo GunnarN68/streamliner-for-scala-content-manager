@@ -208,6 +208,56 @@ test('request paths ask for the smallest page and only the fields needed', () =>
   assert.match(bypassPath(media, ['1', '2', '3']), /^media\/search\?offset=0&limit=3&/);
 });
 
+test('usage names: each clause asks its own list for the first names, by name', () => {
+  const { usageClauses, usageNamesPath, USAGE_KINDS } = load().internals;
+  const media = USAGE_KINDS.find((k) => k.name === 'media');
+  const [playlists, messages] = usageClauses(media, { playlistsCount: 12, messagesCount: 2 }, 7);
+  assert.equal(playlists.names, 'playlists/search?offset=0&limit=10&search=&sort=name&count=0&filters=' +
+    encodeURIComponent('{"media":{"values":["7"]}}') + '&facets=&listOnly=true&fields=id,name');
+  assert.equal(playlists.item, '#playlists/');
+  assert.match(messages.names, /^media\/search\?offset=0&limit=2&/, 'never more than the count');
+  assert.equal(messages.item, '#message/');
+  const channel = USAGE_KINDS.find((k) => k.name === 'channel');
+  assert.match(usageNamesPath(channel.list, 3, 0), /^players\/search\?offset=0&limit=10&/,
+    'no count to go by, so the full limit');
+  const playlist = USAGE_KINDS.find((k) => k.name === 'playlist');
+  const channelsAt = (main) => {
+    const kinds = load({ markers: { main } }).internals;
+    const kind = kinds.USAGE_KINDS.find((k) => k.name === 'playlist');
+    return kinds.usageNamesPath(kind.cats[0].list, 1, 1).split('?')[0];
+  };
+  assert.equal(usageNamesPath(playlist.cats[0].list, 1, 1).split('?')[0], 'channels/search');
+  assert.equal(channelsAt('js/main'), 'channels', '11.01 has no channels/search');
+  assert.equal(channelsAt('js/main.js?_=11.07.02'), 'channels');
+  assert.equal(channelsAt('js/main.js?_=12.00.00'), 'channels/search');
+  assert.equal(channelsAt('js/dist/main.js?_=13.60.01'), 'channels/search');
+  const off = withConfig({ usageNameCount: 0 }).internals;
+  const offMedia = off.USAGE_KINDS.find((k) => k.name === 'media');
+  assert.equal(off.usageClauses(offMedia, { playlistsCount: 2 }, 7)[0].names, null, '0 names none');
+});
+
+test('usage names: linked names in brackets, and what was left out', () => {
+  const app = load();
+  const { fillNames } = app.internals;
+  const text = (slot) => slot.children.map((c) => c.textContent).join('');
+  const clause = { item: '#playlists/' };
+  const slot = app.document.createElement('span');
+  fillNames(slot, clause, null, { list: [{ id: 1, name: 'A' }, { id: 2, name: 'B' }], resultCount: 12 });
+  assert.equal(text(slot), ' (A, B, and 10 more)');
+  same(slot.children.filter((c) => c.tagName === 'A').map((a) => a.getAttribute('href')),
+    ['#playlists/1', '#playlists/2']);
+  const all = app.document.createElement('span');
+  fillNames(all, clause, null, { list: [{ id: 1, name: 'A' }], resultCount: 1 });
+  assert.equal(text(all), ' (A)');
+  const old = app.document.createElement('span');
+  fillNames(old, clause, null, { list: [{ id: 1, name: 'A' }], count: 3 });
+  assert.equal(text(old), ' (A, and 2 more)', '11.x channels calls its total count');
+  const none = app.document.createElement('span');
+  fillNames(none, clause, null, null);
+  fillNames(none, clause, null, { list: [], resultCount: 0 });
+  same(none.children, [], 'a failed or empty reply adds nothing');
+});
+
 test('host in title: prefix, no dangling separator, and removal', () => {
   const app = load();
   const { syncHostTitle } = app.internals;

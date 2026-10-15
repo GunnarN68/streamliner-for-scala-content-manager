@@ -99,6 +99,9 @@
     // Spells the Used: breakdown out in the row and links each part, instead of
     // going through Content Manager's dialog to reach the same links.
     bypassUsageDialog: true,
+    // Names the first few things behind each part, by name, each linking to
+    // that one item. 0 names none. Costs one request per part.
+    usageNameCount: 10,
 
     // On 13.x the side-menu entry for the section you are in stops being a
     // link. This keeps it one while you are deeper in that section.
@@ -1757,7 +1760,7 @@
     if (clauses) {
       for (var c = 0; c < clauses.length; c++) {
         if (c) li.appendChild(document.createTextNode(', '));
-        li.appendChild(clauseLink(clauses[c]));
+        appendClause(li, clauses[c]);
       }
       return li;
     }
@@ -1974,8 +1977,12 @@
   //   Used: 2 playlists, 3 channels, 1 message
   //
   // Each clause links where the dialog's own entry pointed, so the dialog is
-  // never needed. No extra round trip per row either: one batched call covers a
-  // whole page, the same call Content Manager already makes for itself.
+  // never needed. The counts cost no extra round trip per row: one batched call
+  // covers a whole page, the same call Content Manager already makes for itself.
+  // The names after each clause do cost one request per clause, which is why
+  // usageNameCount can turn them off:
+  //
+  //   Used By: 12 Playlists (A, B, ... J, and 2 more), 1 Message (Welcome)
 
   // The label changes with the feature, because the line stops meaning the same
   // thing. "Used: 3 times" is a tally. "Used By: 3 Messages" names what is using
@@ -2013,6 +2020,26 @@
   //
   // Type names are title-cased because that is how the app writes them, both in
   // the dialog and in the channel list's own "Used in: 1 Player".
+  //
+  // A category's list is the route and filters its clause links to. The names
+  // come from the same filters on the list's own search endpoint, and each one
+  // links to that item's own page at item + id.
+  var PLAYLIST_LIST = { route: '#playlists/', endpoint: 'playlists/search', item: '#playlists/' };
+  var MESSAGE_LIST = { route: '#media/', endpoint: 'media/search', item: '#message/' };
+  // 12.00 added channels/search. 11.x lists channels at channels, which takes
+  // the same parameters and calls its total count rather than resultCount.
+  var CHANNEL_LIST = {
+    route: '#channel/', endpoint: 'channels/search', endpoint11: 'channels', item: '#channel/'
+  };
+  var PLAYER_LIST = { route: '#player/', endpoint: 'players/search', item: '#player/' };
+
+  function usageList(list, filters) {
+    return {
+      route: list.route, endpoint: list.endpoint, endpoint11: list.endpoint11,
+      item: list.item, filters: filters
+    };
+  }
+
   var USAGE_KINDS = [
     {
       name: 'template',
@@ -2020,9 +2047,9 @@
       // No list call: the template usage feature has already fetched these.
       cats: [
         { count: 'messagesCount', noun: 'message',
-          link: function (id) {
-            return usageHash('#media/', { templates: { values: [String(id)] } });
-          } }
+          list: usageList(MESSAGE_LIST, function (id) {
+            return { templates: { values: [String(id)] } };
+          }) }
       ]
     },
     {
@@ -2034,15 +2061,13 @@
       fields: 'id,usingMessagesCount,usingPlaylistsCount',
       cats: [
         { count: 'playlistsCount', noun: 'playlist',
-          link: function (id) {
-            return usageHash('#playlists/', { media: { values: [String(id)] } });
-          } },
+          list: usageList(PLAYLIST_LIST, function (id) {
+            return { media: { values: [String(id)] } };
+          }) },
         { count: 'messagesCount', noun: 'message',
-          link: function (id) {
-            return usageHash('#media/', {
-              type: { values: ['MESSAGE'] }, media: { values: [String(id)] }
-            });
-          } }
+          list: usageList(MESSAGE_LIST, function (id) {
+            return { type: { values: ['MESSAGE'] }, media: { values: [String(id)] } };
+          }) }
       ]
       // usingTemplatesCount exists on this search and is always 0. Content
       // Manager has no media-used-by-template relationship, so there is no
@@ -2055,21 +2080,21 @@
       fields: 'id,channelsCount,asSubPlaylistsCount,messagesCount',
       cats: [
         { count: 'channelsCount', noun: 'channel',
-          link: function (id) {
-            return usageHash('#channel/', { playlists: { values: [String(id)] } });
-          } },
+          list: usageList(CHANNEL_LIST, function (id) {
+            return { playlists: { values: [String(id)] } };
+          }) },
         { count: 'asSubPlaylistsCount', noun: 'playlist',
-          link: function (id) {
-            return usageHash('#playlists/', { playlist: { values: [String(id)] } });
-          } },
+          list: usageList(PLAYLIST_LIST, function (id) {
+            return { playlist: { values: [String(id)] } };
+          }) },
         // Read off the dialog like the rest, once a playlist existed with a
         // message using it. Note what is absent: media-to-messages needs a
         // type discriminator and this does not, presumably because only a
         // message can hold a playlist, so there is nothing else to exclude.
         { count: 'messagesCount', noun: 'message',
-          link: function (id) {
-            return usageHash('#media/', { playlists: { values: [String(id)] } });
-          } }
+          list: usageList(MESSAGE_LIST, function (id) {
+            return { playlists: { values: [String(id)] } };
+          }) }
       ]
     }
   ];
@@ -2086,9 +2111,9 @@
     name: 'channel',
     match: /^#\/?channels?(?:[\/?]|$)/,
     copyText: true,
-    link: function (id) {
-      return usageHash('#player/', { channels: { values: [String(id)] } });
-    }
+    list: usageList(PLAYER_LIST, function (id) {
+      return { channels: { values: [String(id)] } };
+    })
   });
 
   var TEMPLATE_KIND = USAGE_KINDS[0];
@@ -2143,7 +2168,7 @@
       var cat = kind.cats[i];
       var n = counts[cat.count];
       if (!n) continue;
-      if (!cat.link) return null;
+      if (!cat.list) return null;
       // Worded by the app's usage.message and usage.messages keys and their
       // siblings, which is what the app's own usage dialog says.
       var noun = cat.noun.charAt(0).toUpperCase() + cat.noun.slice(1);
@@ -2157,7 +2182,9 @@
         text: text.replace(new RegExp('(^|\\s)' + n + '(\\s|$)'), function (m, before, after) {
           return (before ? '\u00a0' : '') + n + (after ? '\u00a0' : '');
         }),
-        href: cat.link(id)
+        href: usageListHash(cat.list, id),
+        names: usageNamesPath(cat.list, id, n),
+        item: cat.list.item
       });
     }
     return out.length ? out : null;
@@ -2191,6 +2218,121 @@
     // should not also select the row and arm the toolbar buttons.
     a.addEventListener('click', function (e) { e.stopPropagation(); });
     return a;
+  }
+
+  function usageListHash(list, id) {
+    return usageHash(list.route, list.filters(id));
+  }
+
+  function usageNameCount() {
+    var n = parseInt(CONFIG.usageNameCount, 10);
+    return n > 0 ? n : 0;
+  }
+
+  // The first names behind a clause, in name order, from the same filtered
+  // search its link opens. resultCount comes back whatever the limit, so the
+  // one call also says how many were left out. Asks for no more than the count
+  // when there is one: limit=0 would mean unlimited. Null when names are off.
+  function usageNamesPath(list, id, count) {
+    var limit = usageNameCount();
+    if (!limit) return null;
+    if (count > 0 && count < limit) limit = count;
+    var endpoint = list.endpoint11 && appBefore12() ? list.endpoint11 : list.endpoint;
+    return endpoint + '?offset=0&limit=' + limit + '&search=&sort=name&count=0' +
+      '&filters=' + encodeURIComponent(JSON.stringify(list.filters(id))) +
+      '&facets=&listOnly=true&fields=id,name';
+  }
+
+  // Keyed by request path, which carries the item, the category and the limit.
+  // Each entry is a finished reply with its time, or the slots still waiting
+  // for one. Saving any setting redraws every line, and the cache keeps that
+  // from asking again. It ages out like the template counts, so names an hour
+  // stale are not shown.
+  var namesCache = {};
+  var namesQueue = [];
+  var namesActive = 0;
+  var namesPumpQueued = false;
+
+  function requestNames(path, slot, done) {
+    var hit = namesCache[path];
+    if (hit && hit.waiting) { hit.waiting.push({ slot: slot, done: done }); return; }
+    if (hit && Date.now() - hit.at < USAGE_TTL_MS) { done(hit.data); return; }
+    namesCache[path] = { waiting: [{ slot: slot, done: done }] };
+    namesQueue.push(path);
+    // Deferred, because the slot is not in the page yet: the line it sits in
+    // is appended after its clauses are built.
+    if (!namesPumpQueued) {
+      namesPumpQueued = true;
+      nativeSetTimeout(namesPump, 0);
+    }
+  }
+
+  function namesWanted(entry) {
+    for (var i = 0; i < entry.waiting.length; i++) {
+      if (entry.waiting[i].slot.isConnected) return true;
+    }
+    return false;
+  }
+
+  // Shares the template counts' concurrency setting. A request whose slots
+  // have all left the page is dropped unasked, so leaving a list, or switching
+  // the feature off, stops its queue rather than draining it.
+  function namesPump() {
+    namesPumpQueued = false;
+    while (namesActive < usageConcurrency() && namesQueue.length) {
+      var path = namesQueue.shift();
+      var entry = namesCache[path];
+      if (!entry || !entry.waiting) continue;
+      if (!namesWanted(entry)) { delete namesCache[path]; continue; }
+      namesActive++;
+      (function (path, waiting) {
+        usageGet(path, function (data) {
+          namesActive--;
+          var ok = data && data.list ? data : null;
+          // A failure is not cached, so the next drawing of the line asks again.
+          if (ok) namesCache[path] = { at: Date.now(), data: ok };
+          else delete namesCache[path];
+          for (var i = 0; i < waiting.length; i++) waiting[i].done(ok);
+          namesPump();
+        });
+      }(path, entry.waiting));
+    }
+  }
+
+  // " (A, B, and 2 more)" after the clause. The app has no words for the
+  // remainder, so outside English it reads "+2".
+  function fillNames(slot, clause, model, data) {
+    if (!data || !data.list || !data.list.length) return;
+    slot.appendChild(document.createTextNode(' ('));
+    for (var i = 0; i < data.list.length; i++) {
+      var item = data.list[i];
+      if (i) slot.appendChild(document.createTextNode(', '));
+      slot.appendChild(clauseLink({
+        text: String(item.name != null ? item.name : item.id),
+        href: clause.item + encodeURIComponent(String(item.id))
+      }, model));
+    }
+    var total = typeof data.resultCount === 'number' ? data.resultCount : data.count;
+    var more = (typeof total === 'number' ? total : 0) - data.list.length;
+    if (more > 0) {
+      slot.appendChild(document.createTextNode(
+        appIsEnglish() ? ', and ' + more + ' more' : ', +' + more));
+    }
+    slot.appendChild(document.createTextNode(')'));
+  }
+
+  // A clause, and a slot after it that its names fill in when they arrive.
+  // The line is drawn at once and grows, rather than waiting on a request per
+  // clause before it shows anything.
+  function appendClause(parent, clause, model) {
+    parent.appendChild(clauseLink(clause, model));
+    if (!clause.names) return;
+    var slot = document.createElement('span');
+    slot.setAttribute('data-cm-helper', 'true');
+    parent.appendChild(slot);
+    requestNames(clause.names, slot, function (data) {
+      fillNames(slot, clause, model, data);
+    });
   }
 
   function bypassPath(kind, ids) {
@@ -2243,7 +2385,7 @@
 
     for (var k = 0; k < clauses.length; k++) {
       if (k) holder.appendChild(document.createTextNode(', '));
-      holder.appendChild(clauseLink(clauses[k], model));
+      appendClause(holder, clauses[k], model);
     }
     for (var i = 0; i < own.length; i++) {
       own[i].setAttribute(BYPASS_HID, own[i].style.display || '');
@@ -2276,7 +2418,13 @@
     if (!own.length) return;
     var text = own[0].textContent.replace(/\s+/g, ' ').trim();
     if (!text) return;
-    paintClauses(li, [{ text: text, href: kind.link(id) }], own, bypassLabel());
+    // The count is only in the app's text, so the names ask for the full limit.
+    paintClauses(li, [{
+      text: text,
+      href: usageListHash(kind.list, id),
+      names: usageNamesPath(kind.list, id, 0),
+      item: kind.list.item
+    }], own, bypassLabel());
   }
 
   function applyBypassUsage() {
@@ -3837,7 +3985,8 @@
     fixSignIn: '11.x needs it for the button, 13.50 for Enter.',
     pinnedMenuWidth: 'Wider menus take width from the page content.',
     listFilterHeight: 'How tall a filter list may get before it scrolls.',
-    templateUsageConcurrency: 'How many usage counts to fetch at once. Higher is faster and leans harder on the server.',
+    templateUsageConcurrency: 'How many usage counts or names to fetch at once. Higher is faster and leans harder on the server.',
+    usageNameCount: 'How many names to list after each count, such as 2 Playlists (A, B). 0 lists none.',
     searchHotkey: 'A key on its own, or with modifiers: "/", "cmd+k", "ctrl+k", "alt+s".',
     darkMode: 'Applies as soon as you save.',
     showHostBadge: 'Adds the host badge to the login page.',
@@ -3915,8 +4064,8 @@
       master: 'bypassUsageDialog',
       blurb: 'Breaks a Used: count into its parts in the list, such as 2 Channels and ' +
              '1 Message. Each part links straight to what it counts, instead of via the ' +
-             'Usage Dialog.',
-      advanced: []
+             'Usage Dialog, and names the first few of them, each a link to that item.',
+      advanced: ['usageNameCount']
     },
     {
       title: 'Timeslot Playlist Link',
@@ -4814,17 +4963,29 @@
   var PROFILES_CSS = /(^|\/)images\/profiles\/\?css=true$/;
   var MAIN_JS = /^js\/(dist\/)?main(\.js(\?_=\d+\.\d+\.\d+)?)?$/;
 
-  function hasMarker(selector, attr, pattern) {
+  // The matching value, or null.
+  function findMarker(selector, attr, pattern) {
     var found = document.querySelectorAll(selector);
     for (var i = 0; i < found.length; i++) {
-      if (pattern.test(found[i].getAttribute(attr) || '')) return true;
+      var value = found[i].getAttribute(attr) || '';
+      if (pattern.test(value)) return value;
     }
-    return false;
+    return null;
   }
 
+  // Kept from boot, because 13.60 takes the loader script out of the page once
+  // it has run, and the version is only written there.
+  var appMain = null;
+
   function isContentManager() {
-    return hasMarker('link[href*="images/profiles/"]', 'href', PROFILES_CSS) &&
-      hasMarker('script[data-main]', 'data-main', MAIN_JS);
+    if (!findMarker('link[href*="images/profiles/"]', 'href', PROFILES_CSS)) return false;
+    appMain = findMarker('script[data-main]', 'data-main', MAIN_JS);
+    return appMain !== null;
+  }
+
+  // 11.01 writes no version at all, and 11.07 writes 11.07.02.
+  function appBefore12() {
+    return /^js\/main(\.js\?_=11\.\d+\.\d+)?$/.test(appMain || '');
   }
 
   function boot() {
@@ -4926,6 +5087,8 @@
         usageClauses: usageClauses,
         usageCountPath: usageCountPath,
         bypassPath: bypassPath,
+        usageNamesPath: usageNamesPath,
+        fillNames: fillNames,
         PINNED_TEXT_CSS: PINNED_TEXT_CSS,
         markMenus: markMenus,
         undockToggles: undockToggles,
