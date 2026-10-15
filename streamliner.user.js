@@ -4476,6 +4476,7 @@
     }
 
     var reset = button('Reset to defaults');
+    var allOff = button('Turn all off');
     var cancel = button('Cancel');
     var save = button('Save', true);
 
@@ -4485,6 +4486,12 @@
       // setting is on the form, so Save then writes every default.
       closeSettings();
       openSettings({ welcome: welcome, values: cloneValue(DEFAULTS) });
+    });
+    // Like Reset, only the form changes until Save. Only the master switches go
+    // off, and Save turns each feature off its own way. The advanced values
+    // stay, so switching a feature back on later finds them as they were.
+    allOff.addEventListener('click', function () {
+      masters.forEach(function (entry) { entry.input.checked = false; });
     });
     cancel.addEventListener('click', closeSettings);
     save.addEventListener('click', function () {
@@ -4523,6 +4530,7 @@
     });
 
     foot.appendChild(reset);
+    foot.appendChild(allOff);
     foot.appendChild(cancel);
     foot.appendChild(save);
     card.appendChild(foot);
