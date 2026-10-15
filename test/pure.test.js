@@ -657,7 +657,8 @@ test('not Content Manager: without both files in head, the script does nothing',
     { markers: { main: 'js/app/main' } },
     { markers: { main: 'js/main.js?_=latest' } },
     { markers: { main: 'other/js/main.js?_=13.50.02' } },
-    { markers: { main: 'js/mainframe' } }
+    { markers: { main: 'js/mainframe' } },
+    { markers: { main: 'js/other/main.js?_=13.60.01' } }
   ];
   for (const opts of cases) {
     // Dark mode saved on, so a leak would show up as an early dark sheet.
@@ -672,8 +673,8 @@ test('not Content Manager: without both files in head, the script does nothing',
   }
 });
 
-test('Content Manager: the files as 11.01, 11.07 and 12.00 write them are accepted', () => {
-  for (const main of ['js/main', 'js/main.js?_=11.07.02', 'js/main.js?_=12.00.00']) {
+test('Content Manager: the files as 11.01, 11.07, 12.00 and 13.60 write them are accepted', () => {
+  for (const main of ['js/main', 'js/main.js?_=11.07.02', 'js/main.js?_=12.00.00', 'js/dist/main.js?_=13.60.01']) {
     const app = load({ markers: { main } });
     assert.equal(typeof app.streamliner.version, 'string', main);
   }
