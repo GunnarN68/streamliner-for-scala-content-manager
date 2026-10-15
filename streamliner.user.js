@@ -1625,6 +1625,41 @@
     return m ? m[1] + '/api/rest/' : null;
   }
 
+  // The jQuery the app sends its requests with: the one whose document carries
+  // the app's ajaxSend handler. 13.60 bundles its own copy as window.$, beside
+  // a separate window.jQuery, and only the bundled copy has the handler.
+  function appJquery() {
+    var list = [appRequire('jquery'), window.$, window.jQuery];
+    for (var i = 0; i < list.length; i++) {
+      var jq = list[i];
+      if (!jq || typeof jq.ajax !== 'function' || typeof jq._data !== 'function') continue;
+      var events = jq._data(document, 'events');
+      if (events && events.ajaxSend && events.ajaxSend.length) return jq;
+    }
+    return window.jQuery || null;
+  }
+
+  // A request the way the app's own models send it. It goes through the app's
+  // jQuery, because the app adds its apiToken header, or signs the request, in
+  // a document-wide ajaxSend handler. body, when given, is sent as JSON, as
+  // Backbone's save does. done gets the parsed answer, or null and the xhr on
+  // failure.
+  function appRest(type, path, body, done) {
+    var jq = appJquery();
+    var base = usageApiBase();
+    if (!jq || typeof jq.ajax !== 'function' || !base) { done(null, null); return; }
+    jq.ajax({
+      type: type,
+      url: base + path,
+      dataType: 'json',
+      contentType: 'application/json',
+      data: body === undefined ? undefined : JSON.stringify(body),
+      processData: false,
+      success: function (data) { done(data || {}, null); },
+      error: function (xhr) { done(null, xhr); }
+    });
+  }
+
   // XMLHttpRequest rather than fetch, to stay with the rest of the file.
   // Nothing else here uses a Promise.
   function usageGet(path, done) {
@@ -2815,6 +2850,18 @@
   var playlistLinkPatched = false;
   var playlistEditorHooked = false;
 
+  // support/Resource's PLAYLIST_VIEW. It is the server's own permission id, the
+  // same from 11.01 to 13.60, so it needs no lookup in the app's modules.
+  var PERM_PLAYLIST_VIEW = 'playlistsView';
+
+  // The timeslot dialog's own test for its link, without the workgroup half
+  // that Timeslot Playlist Link works around.
+  function canViewPlaylists() {
+    var app = window.App;
+    return !!(app && typeof app.hasPermissionWithoutImplicit === 'function' &&
+      app.hasPermissionWithoutImplicit(PERM_PLAYLIST_VIEW));
+  }
+
   function patchPlaylistComponent() {
     if (playlistLinkPatched) return true;
     var Playlist = appRequire('components/schedule/playlist');
@@ -2823,11 +2870,7 @@
     wrapBefore(Playlist.prototype, 'updateFields', function (attrs) {
       if (!CONFIG.timeslotPlaylistLink || this.accessViewPlaylist) return;
       if (!this.playlist || !attrs || attrs !== this.playlist.attributes) return;
-      var Resource = appRequire('support/Resource');
-      var app = window.App;
-      if (!Resource || !app || typeof app.hasPermissionWithoutImplicit !== 'function') return;
-      if (!app.hasPermissionWithoutImplicit(Resource.PLAYLIST_VIEW)) return;
-      this.accessViewPlaylist = true;
+      if (canViewPlaylists()) this.accessViewPlaylist = true;
     });
     log('timeslot playlist link: patched');
     return true;
@@ -2871,15 +2914,6 @@
     var view = page && page.nonScheduledContendSelector;
     if (!view || !view.el || !document.body.contains(view.el)) return null;
     return { page: page, view: view };
-  }
-
-  // The timeslot dialog's own test for its link, without the workgroup half
-  // that Timeslot Playlist Link works around.
-  function canViewPlaylists() {
-    var Resource = appRequire('support/Resource');
-    var app = window.App;
-    return !!(Resource && app && typeof app.hasPermissionWithoutImplicit === 'function' &&
-      app.hasPermissionWithoutImplicit(Resource.PLAYLIST_VIEW));
   }
 
   function nonScheduledTab(page) {
@@ -3065,8 +3099,9 @@
   // since it finds every .actions in the view, so the helper rule is
   // !important to beat the inline style.
   //
-  // The request is the list's own: a Storage call turns the player id into a
-  // key, and SynchronizePlayer starts the plan for that key. The list offers
+  // The requests are the list's own, made directly rather than through the
+  // app's models: a POST to storage turns the player id into a key, and a POST
+  // to generatePlan starts the plan for that key. The list offers
   // the button to holders of the player sync permission, and hides it for a
   // disabled player, for one in maintenance, and on 12.00 and later while the
   // player licenses are exceeded. All of those apply here. The button stays
@@ -3081,6 +3116,9 @@
   var genPlanStyleEl = null;
   var playerDetailPatched = false;
 
+  // support/Resource's PLAYER_SYNC, the same from 11.01 to 13.60.
+  var PERM_PLAYER_SYNC = 'synchronizePlayers';
+
   function playerDetailId() {
     var m = /^#player\/([^\/?]+)/.exec(location.hash || '');
     return m && m[1] !== 'multi' ? decodeURIComponent(m[1]) : null;
@@ -3093,9 +3131,8 @@
 
   function generatePlan(id, button) {
     var jq = window.jQuery;
-    var Models = appRequire('models/model');
     var app = window.App;
-    if (!jq || !Models || !Models.Storage || !Models.SynchronizePlayer || !app) return;
+    if (!jq || !app) return;
     var t = function (key) { return jq.i18n.prop(key); };
     var busy = jq('#busyWorking');
     function done(type, key) {
@@ -3105,24 +3142,23 @@
     }
     button.disabled = true;
     busy.show();
-    new Models.Storage().save({ ids: [id] }, {
-      success: function (stored) {
-        new Models.SynchronizePlayer(stored.attributes.value, false).save({}, {
-          success: function () {
-            done('success', 'player.generateplan.info.singleItem');
-          },
-          error: function (model, xhr) {
-            var body = null;
-            try { body = JSON.parse(xhr.responseText); } catch (e) { /* not JSON */ }
-            done('error', body && body.code === 'UnableToStartPlanGeneration'
-              ? 'player.generateplan.error.serverBusy'
-              : 'player.generateplan.error.singleItem');
-          }
-        });
-      },
-      error: function () {
+    appRest('POST', 'storage', { ids: [id] }, function (stored) {
+      if (!stored || stored.value === undefined || stored.value === null) {
         done('error', 'player.generateplan.error.singleItem');
+        return;
       }
+      var path = 'players/' + encodeURIComponent(stored.value) + '/generatePlan?force=false';
+      appRest('POST', path, {}, function (ok, xhr) {
+        if (ok) {
+          done('success', 'player.generateplan.info.singleItem');
+          return;
+        }
+        var body = null;
+        try { body = JSON.parse(xhr && xhr.responseText); } catch (e) { /* not JSON */ }
+        done('error', body && body.code === 'UnableToStartPlanGeneration'
+          ? 'player.generateplan.error.serverBusy'
+          : 'player.generateplan.error.singleItem');
+      });
     });
   }
 
@@ -3133,9 +3169,8 @@
       return;
     }
     var app = window.App;
-    var Resource = appRequire('support/Resource');
-    if (!app || typeof app.hasPermission !== 'function' || !Resource ||
-        !Resource.PLAYER_SYNC || !app.hasPermission(Resource.PLAYER_SYNC)) return;
+    if (!app || typeof app.hasPermission !== 'function' ||
+        !app.hasPermission(PERM_PLAYER_SYNC)) return;
     var jq = window.jQuery;
     if (!jq || !jq.i18n || typeof jq.i18n.prop !== 'function') return;
 
@@ -3184,27 +3219,20 @@
     return !(p.distributionServer && p.distributionServer.driver === 'OMNICAST');
   }
 
-  // 11.07 has no license check, and there the license always passes.
+  // 11.x has no license check, and there the license always passes.
   function checkLicense(holder) {
-    var Models = appRequire('models/model');
-    if (!Models || !Models.HasExceedLicense) {
+    if (appBefore12()) {
       holder.setAttribute('data-license', 'ok');
       return;
     }
-    new Models.HasExceedLicense().fetch({
-      success: function (m) {
-        holder.setAttribute('data-license', m.get('value') === 'true' ? 'no' : 'ok');
-      }
+    appRest('GET', 'players/hasExceedLicense', undefined, function (m) {
+      if (m) holder.setAttribute('data-license', String(m.value) === 'true' ? 'no' : 'ok');
     });
   }
 
   function checkPlayer(holder, id) {
-    var Models = appRequire('models/model');
-    if (!Models || !Models.Player) return;
-    new Models.Player({ id: id }).fetch({
-      success: function (m) {
-        holder.setAttribute('data-player', playerCanGeneratePlan(m.attributes) ? 'ok' : 'no');
-      }
+    appRest('GET', 'players/' + encodeURIComponent(id), undefined, function (p) {
+      if (p) holder.setAttribute('data-player', playerCanGeneratePlan(p) ? 'ok' : 'no');
     });
   }
 

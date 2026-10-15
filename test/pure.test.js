@@ -513,12 +513,12 @@ test('timeslot playlist link: a playlist the server returned is linked', () => {
   let editorDetails = 0;
   const Editor = function () {};
   Editor.prototype.updatePlaylistDetails = function () { editorDetails++; mods['components/schedule/playlist'] = Playlist; };
-  const mods = { 'module/schedule/timeslotEditor': Editor, 'support/Resource': { PLAYLIST_VIEW: 'pv' } };
+  const mods = { 'module/schedule/timeslotEditor': Editor };
   const req = (name) => mods[name];
   req.defined = (name) => name in mods;
   app.window.require = req;
   let allowed = true;
-  app.window.App = { hasPermissionWithoutImplicit: (r) => allowed && r === 'pv' };
+  app.window.App = { hasPermissionWithoutImplicit: (r) => allowed && r === 'playlistsView' };
   const { applyPlaylistLink } = app.internals;
 
   // Not defined yet: the editor is hooked, and patches it the moment it exists.
