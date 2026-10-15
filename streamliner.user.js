@@ -1406,8 +1406,12 @@
   // lookup, process, next and prev are called through the prototype, so the
   // hooks reach a box that already exists. The key handlers are bound once
   // per box at construction, which is why keys are caught by listeners.
+  //
+  // 13.60 has two jQuery copies. window.jQuery carries a typeahead plugin
+  // that no box uses, and the boxes' typeahead lives on the app's window.$,
+  // which has no fn.typeahead at all. So the class is also reached from a
+  // box itself, through whichever copy holds the box's data.
   var suggestJq = null;
-  var suggestBoundTo = null;
 
   function suggestionsStale(ta, active) {
     if (ta.__cmSettled) return true;
@@ -1418,25 +1422,47 @@
     return value.length < min || value !== ta.query;
   }
 
-  // The plugin and each box's data belong to the jQuery that carries
-  // fn.typeahead. The app's own module comes first, window.jQuery second.
-  function typeaheadJquery() {
-    var list = [appRequire('jquery'), window.jQuery];
+  // Every jQuery on the page, the app's own module first.
+  function pageJqueries() {
+    var list = [appRequire('jquery'), window.$, window.jQuery];
+    var out = [];
     for (var i = 0; i < list.length; i++) {
       var jq = list[i];
-      if (jq && jq.fn && jq.fn.typeahead && jq.fn.typeahead.Constructor) return jq;
+      if (jq && jq.fn && typeof jq.fn.data === 'function' && out.indexOf(jq) === -1) out.push(jq);
+    }
+    return out;
+  }
+
+  // A box's typeahead, and the jQuery that holds it.
+  function findTypeahead(input) {
+    if (!input || input.tagName !== 'INPUT') return null;
+    var list = pageJqueries();
+    for (var i = 0; i < list.length; i++) {
+      var ta = list[i](input).data('typeahead');
+      if (ta && typeof ta === 'object') return { jq: list[i], ta: ta };
     }
     return null;
   }
 
   // Looked up on every sweep. 11.07 also loads bootstrap.js as a plain script,
-  // whose typeahead main.js later replaces with its own.
+  // whose typeahead main.js later replaces with its own. Every plugin's class
+  // is patched, and so is the class of the boxes on the page.
   function applySearchSuggestions() {
-    var jq = typeaheadJquery();
-    if (!jq) return;
-    suggestJq = jq;
-    var proto = jq.fn.typeahead.Constructor.prototype;
-    if (proto.__cmHelperPatched) return;
+    var list = pageJqueries();
+    for (var i = 0; i < list.length; i++) {
+      var plugin = list[i].fn.typeahead;
+      if (plugin && plugin.Constructor) patchTypeahead(plugin.Constructor.prototype);
+    }
+    var boxes = document.querySelectorAll('input.search');
+    for (var k = 0; k < boxes.length; k++) {
+      var found = findTypeahead(boxes[k]);
+      if (found) patchTypeahead(Object.getPrototypeOf(found.ta));
+    }
+  }
+
+  function patchTypeahead(proto) {
+    if (!proto || proto === Object.prototype || proto.__cmHelperPatched) return;
+    if (typeof proto.lookup !== 'function' || typeof proto.process !== 'function') return;
     proto.__cmHelperPatched = true;
 
     // Only a keystroke that changes the text runs lookup, and Down.
@@ -1468,8 +1494,8 @@
   }
 
   function bindSuggestionPicks(jq) {
-    if (suggestBoundTo === jq) return;
-    suggestBoundTo = jq;
+    if (jq.__cmPicksBound) return;
+    jq.__cmPicksBound = true;
     jq(document).on('typeahead:selected', function (e) {
       if (!CONFIG.fixSearchSuggestions) return;
       pickSelected(jq, e.target);
@@ -1545,8 +1571,11 @@
   }
 
   function suggestionTypeahead(target) {
-    if (!suggestJq || !target || target.tagName !== 'INPUT') return null;
-    return suggestJq(target).data('typeahead') || null;
+    var found = findTypeahead(target);
+    if (!found) return null;
+    suggestJq = found.jq;
+    patchTypeahead(Object.getPrototypeOf(found.ta));
+    return found.ta;
   }
 
   // Runs before the plugin's keydown on the box.
@@ -1628,7 +1657,7 @@
   // The jQuery the app sends its requests with: the one whose document carries
   // the app's ajaxSend handler. 13.60 bundles its own copy as window.$, beside
   // a separate window.jQuery, and only the bundled copy has the handler.
-  function appJquery() {
+  function appJqueryWithHook() {
     var list = [appRequire('jquery'), window.$, window.jQuery];
     for (var i = 0; i < list.length; i++) {
       var jq = list[i];
@@ -1636,7 +1665,11 @@
       var events = jq._data(document, 'events');
       if (events && events.ajaxSend && events.ajaxSend.length) return jq;
     }
-    return window.jQuery || null;
+    return null;
+  }
+
+  function appJquery() {
+    return appJqueryWithHook() || window.jQuery || null;
   }
 
   // A request the way the app's own models send it. It goes through the app's
@@ -2540,13 +2573,17 @@
   // So the whole list is fetched in one go and sorted here. With one page the
   // app's pager draws nothing, and only the limit selector needs hiding.
   //
-  // The hooks are prototype wrappers, reached through the app's own require.
-  // They go in lazily from the sweep, because the modules only exist once
-  // main.js has run, and they read the config on every call so Save applies
-  // at once. A module that is missing, as it may be on 13.x, is left alone.
+  // The hooks are prototype wrappers, reached through the app's own require,
+  // or on 13.60 by signature. They go in lazily from the sweep, because the
+  // modules only exist once main.js has run, and they read the config on every
+  // call so Save applies at once. A module that is missing is left alone.
   var PICKER_MODULE = 'module/maintenancejob/fileSelector';
+  var PICKER_SIGNS = ['attachListeners', 'li.header .rowSelector'];
   var UPLOADER_MODULE = 'components/uploader/maintenanceJobUploader';
+  var UPLOADER_SIGNS = ['renderModal', 'isValidFileExtension', 'windowsupdates'];
   var SELECT_MODULE = 'components/inlineEdit/select';
+  var SELECT_SIGNS = ['buildPopup'];
+  var MAINTENANCE_PAGE = /^#maintenanceJob/i;
   var TALL_CLASS = 'streamliner-tall';
   var PICKER_ALL = 999999;          // what the app itself asks for to mean "all"
   var PICKER_POLL_MS = 1000;
@@ -2588,6 +2625,81 @@
     } catch (e) {
       return null;
     }
+  }
+
+  // 13.60 is built with webpack, and require.js knows none of its modules.
+  // Pushing onto webpack's chunk array hands back webpack's own require, whose
+  // m holds every module's factory. Ids change with each build, so a module is
+  // found by text that only its factory contains, and a signature that matches
+  // more than one module finds nothing. The factories' text is read once, and
+  // each answer is kept.
+  var webpackReq = null;
+  var webpackSources = null;
+  var webpackFound = {};
+
+  function webpackRequire() {
+    if (webpackReq) return webpackReq;
+    var keys = Object.keys(window);
+    for (var i = 0; i < keys.length; i++) {
+      if (keys[i].indexOf('webpackChunk') !== 0) continue;
+      var chunks = window[keys[i]];
+      if (!chunks || typeof chunks.push !== 'function') continue;
+      var got = null;
+      try {
+        chunks.push([[Symbol('streamliner')], {}, function (r) { got = r; }]);
+      } catch (e) { /* not webpack's after all */ }
+      if (got && got.m) {
+        webpackReq = got;
+        return got;
+      }
+    }
+    return null;
+  }
+
+  function webpackModule(signs) {
+    var key = signs.join('\n');
+    if (webpackFound[key]) return webpackFound[key];
+    var req = webpackRequire();
+    if (!req) return null;
+    if (!webpackSources) {
+      webpackSources = [];
+      for (var id in req.m) {
+        if (Object.prototype.hasOwnProperty.call(req.m, id)) webpackSources.push([id, String(req.m[id])]);
+      }
+    }
+    var hit = null;
+    for (var i = 0; i < webpackSources.length; i++) {
+      var src = webpackSources[i][1];
+      var all = true;
+      for (var k = 0; k < signs.length && all; k++) all = src.indexOf(signs[k]) !== -1;
+      if (!all) continue;
+      if (hit !== null) {
+        log('several modules match ' + signs.join(', '));
+        return null;
+      }
+      hit = webpackSources[i][0];
+    }
+    if (hit === null) return null;
+    var mod = null;
+    try {
+      mod = req(hit);
+    } catch (e) {
+      log('module ' + hit + ' failed to load', e);
+      return null;
+    }
+    if (mod && mod.__esModule && mod['default']) mod = mod['default'];
+    if (mod) webpackFound[key] = mod;
+    return mod || null;
+  }
+
+  // A module by its require.js name, or on 13.60 by its signature. Loading a
+  // webpack module runs its factory if the app has not yet, so the lookup
+  // waits for the page that uses the module.
+  function appModule(name, signs, page) {
+    var mod = appRequire(name);
+    if (mod) return mod;
+    if (!window.App || !page.test(location.hash || '')) return null;
+    return webpackModule(signs);
   }
 
   function byName(a, b) {
@@ -2643,34 +2755,46 @@
     return list;
   }
 
-  // Only the picker uses MaintenanceFiles, so this touches nothing else.
-  function patchMaintenanceFiles() {
-    var models = appRequire('models/model');
-    var Files = models && models.MaintenanceFiles;
-    if (!Files || !Files.prototype) return false;
-    if (Files.prototype.__streamlinerPatched) return true;
-    Files.prototype.__streamlinerPatched = true;
+  // Only the picker lists maintenance files, so this touches nothing else. It
+  // works on the request, not on the app's MaintenanceFiles collection, so it
+  // needs none of the app's modules. The collection hands its own this.data to
+  // jQuery as the request's data, so setting the limit there keeps the
+  // collection's tally in step. jQuery has already turned that data into the
+  // query string, which is rebuilt. The sort happens on the reply's text,
+  // before the collection parses it.
+  var MAINTENANCE_FILES_URL = /\/api\/rest\/maintenancefiles\/?(\?|$)/;
 
-    // The base fetch merges data into this.data, so the tally agrees too.
-    wrapBefore(Files.prototype, 'fetch', function (options) {
-      if (!pickerOn()) return;
-      options = options || {};
-      options.data = options.data || {};
-      options.data.limit = PICKER_ALL;
-      options.data.offset = 0;
-      return [options];
+  function installMaintenanceFilesFilter() {
+    var jq = appJqueryWithHook();
+    if (!jq || typeof jq.ajaxPrefilter !== 'function' || jq.__streamlinerFilesFilter) return;
+    jq.__streamlinerFilesFilter = true;
+    jq.ajaxPrefilter(function (options, original) {
+      if (!pickerOn() || String(options.type).toUpperCase() !== 'GET') return;
+      if (!MAINTENANCE_FILES_URL.test(String(options.url))) return;
+      var data = original && original.data;
+      if (!data || typeof data !== 'object') return;
+      data.limit = PICKER_ALL;
+      data.offset = 0;
+      options.data = jq.param(data, options.traditional);
+      var before = options.dataFilter;
+      options.dataFilter = function (text, type) {
+        if (before) text = before.call(this, text, type);
+        try {
+          var body = JSON.parse(text);
+          if (body && body.list && typeof body.list.sort === 'function') {
+            body.list.sort(byName);
+            return JSON.stringify(body);
+          }
+        } catch (e) { /* not JSON, left as it came */ }
+        return text;
+      };
     });
-
-    wrapAfter(Files.prototype, 'parse', function (list) {
-      if (pickerOn() && list && typeof list.slice === 'function') return list.slice().sort(byName);
-    });
-    return true;
   }
 
   function patchFilePicker() {
     if (pickerPatched) return;
-    var Picker = appRequire(PICKER_MODULE);
-    if (!Picker || !Picker.prototype || !patchMaintenanceFiles()) return;
+    var Picker = appModule(PICKER_MODULE, PICKER_SIGNS, MAINTENANCE_PAGE);
+    if (!Picker || !Picker.prototype) return;
     pickerPatched = true;
 
     wrapAfter(Picker.prototype, 'attachListeners', function () {
@@ -2702,7 +2826,7 @@
   // a first pick stays a manual click.
   function patchUploader() {
     if (uploaderPatched) return;
-    var Uploader = appRequire(UPLOADER_MODULE);
+    var Uploader = appModule(UPLOADER_MODULE, UPLOADER_SIGNS, MAINTENANCE_PAGE);
     if (!Uploader || !Uploader.prototype) return;
     uploaderPatched = true;
 
@@ -2719,7 +2843,7 @@
   // it is built, when the dropdown is the task's command selector.
   function patchTaskTypeSelect() {
     if (selectPatched) return;
-    var Select = appRequire(SELECT_MODULE);
+    var Select = appModule(SELECT_MODULE, SELECT_SIGNS, MAINTENANCE_PAGE);
     if (!Select || !Select.prototype) return;
     selectPatched = true;
 
@@ -2813,6 +2937,7 @@
   }
 
   function applyFilePicker() {
+    installMaintenanceFilesFilter();
     patchFilePicker();
     patchUploader();
     patchTaskTypeSelect();
@@ -2848,7 +2973,8 @@
   // path passes, and the user holds the playlist view permission, the link
   // comes back. The error path passes the dialog's options and is left alone.
   var playlistLinkPatched = false;
-  var playlistEditorHooked = false;
+  var PLAYLIST_COMPONENT_SIGNS = ['updateFields', 'accessViewPlaylist'];
+  var SCHEDULE_PAGE = /^#schedule\b/;
 
   // support/Resource's PLAYLIST_VIEW. It is the server's own permission id, the
   // same from 11.01 to 13.60, so it needs no lookup in the app's modules.
@@ -2862,10 +2988,12 @@
       app.hasPermissionWithoutImplicit(PERM_PLAYLIST_VIEW));
   }
 
-  function patchPlaylistComponent() {
-    if (playlistLinkPatched) return true;
-    var Playlist = appRequire('components/schedule/playlist');
-    if (!Playlist || !Playlist.prototype) return false;
+  // The schedule page loads the timeslot editor, which declares the component
+  // as a dependency, so the patch is in before the first dialog opens.
+  function applyPlaylistLink() {
+    if (playlistLinkPatched) return;
+    var Playlist = appModule('components/schedule/playlist', PLAYLIST_COMPONENT_SIGNS, SCHEDULE_PAGE);
+    if (!Playlist || !Playlist.prototype) return;
     playlistLinkPatched = true;
     wrapBefore(Playlist.prototype, 'updateFields', function (attrs) {
       if (!CONFIG.timeslotPlaylistLink || this.accessViewPlaylist) return;
@@ -2873,22 +3001,6 @@
       if (canViewPlaylists()) this.accessViewPlaylist = true;
     });
     log('timeslot playlist link: patched');
-    return true;
-  }
-
-  // The component is only defined once a dialog first requires it, and its
-  // playlist request is already on its way by then. A patch from the next
-  // sweep could land after the answer. The editor's updatePlaylistDetails
-  // creates the component and starts the request in one go, so a hook right
-  // after it patches in time for the first dialog as well.
-  function applyPlaylistLink() {
-    if (patchPlaylistComponent() || playlistEditorHooked) return;
-    var Editor = appRequire('module/schedule/timeslotEditor');
-    if (!Editor || !Editor.prototype) return;
-    playlistEditorHooked = true;
-    wrapAfter(Editor.prototype, 'updatePlaylistDetails', function () {
-      patchPlaylistComponent();
-    });
   }
 
   // ------------------------------------------- non-scheduled content tab
@@ -3238,13 +3350,20 @@
 
   // A save can disable the player, or bring it back. The view calls
   // updatePageHeader with its reloaded model after a save, so the check is
-  // repeated there, from the model the view already has.
+  // repeated there, from the model the view already has. The view is the
+  // page's current view, and its class is reached from it, which needs none
+  // of the app's modules. The app calls the method through the prototype, so
+  // the hook reaches the view already showing. generateNewKey tells the player
+  // detail apart from the other detail views.
   function patchPlayerDetail() {
     if (playerDetailPatched) return;
-    var Detail = appRequire('module/player/detail');
-    if (!Detail || !Detail.prototype) return;
+    var layout = window.App && window.App.view;
+    var view = layout && layout.currentView;
+    var proto = view && Object.getPrototypeOf(view);
+    if (!proto || !Object.prototype.hasOwnProperty.call(proto, 'updatePageHeader') ||
+        typeof proto.generateNewKey !== 'function') return;
     playerDetailPatched = true;
-    wrapAfter(Detail.prototype, 'updatePageHeader', function () {
+    wrapAfter(proto, 'updatePageHeader', function () {
       var holder = this.el && this.el.querySelector(':scope > .header > .' + GENPLAN_CLASS);
       if (holder && this.model) {
         holder.setAttribute('data-player', playerCanGeneratePlan(this.model.attributes) ? 'ok' : 'no');

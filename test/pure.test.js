@@ -510,10 +510,7 @@ test('timeslot playlist link: a playlist the server returned is linked', () => {
   const seen = [];
   const Playlist = function () {};
   Playlist.prototype.updateFields = function () { seen.push(this.accessViewPlaylist); };
-  let editorDetails = 0;
-  const Editor = function () {};
-  Editor.prototype.updatePlaylistDetails = function () { editorDetails++; mods['components/schedule/playlist'] = Playlist; };
-  const mods = { 'module/schedule/timeslotEditor': Editor };
+  const mods = { 'components/schedule/playlist': Playlist };
   const req = (name) => mods[name];
   req.defined = (name) => name in mods;
   app.window.require = req;
@@ -521,10 +518,7 @@ test('timeslot playlist link: a playlist the server returned is linked', () => {
   app.window.App = { hasPermissionWithoutImplicit: (r) => allowed && r === 'playlistsView' };
   const { applyPlaylistLink } = app.internals;
 
-  // Not defined yet: the editor is hooked, and patches it the moment it exists.
   applyPlaylistLink();
-  new Editor().updatePlaylistDetails();
-  assert.equal(editorDetails, 1, 'the original always runs');
 
   const view = () => { const v = new Playlist(); v.playlist = { attributes: {} }; v.accessViewPlaylist = false; return v; };
   let v = view();

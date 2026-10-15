@@ -164,6 +164,7 @@ Streamliner is tested against the following versions of Scala Content Manager.
 * 12.00.xx
 * 12.70.xx
 * 13.50.xx
+* 13.60.xx
 
 ## Contact
 
