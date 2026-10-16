@@ -56,7 +56,9 @@ Adds a Used: count to items in the template list, that links to those messages.
 
 ### Bypass Usage Dialog
 
-Breaks a Used: count into its parts in the list, such as "2 Channels, 1 Message". Each part links straight to what it counts, instead of via the Usage Dialog. Each part also names the first ten items it counts, in name order, and each name links to that item: "12 Playlists (A, B, … J, and 2 more)". The number of names is an advanced setting, and 0 turns the names off. The names cost one request per part.
+Breaks a Used: count into its parts in the list, such as "2 Channels, 1 Message". Each part links straight to what it counts, instead of via the Usage Dialog.
+
+Each part also names the first ten items it counts, in name order, and each name links to that item: "12 Playlists (A, B, … J, and 2 more)". The number of names is an advanced setting, and 0 turns the names off. The names cost one request per part. (Idea and prototype from [@GunnarN68](https://github.com/GunnarN68))
 
 ### Timeslot Playlist Link
 
@@ -165,6 +167,8 @@ Streamliner is tested against the following versions of Scala Content Manager.
 * 12.70.xx
 * 13.50.xx
 * 13.60.xx
+
+(Thanks to [@GunnarN68](https://github.com/GunnarN68) for assistance with 13.60.xxc)
 
 ## Contact
 
