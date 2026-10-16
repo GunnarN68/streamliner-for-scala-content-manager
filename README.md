@@ -80,7 +80,7 @@ Workgroup trees open with Root expanded, so the first level of workgroups shows 
 
 ### Maintenance Files Fixes
 
-Improves the file selection for a maintenance job's Install File task. It lists every file on one page, sorted without regard to case, and drops the warning icon on files in use, since they are already annotated. Upload opens the file chooser straight away, and a new upload is pre-selected as soon as it appears. A task's Type list shows every choice without scrolling.
+Improves the file selection for a maintenance job's Install File task. It lists every file on one page, sorted without regard to case, and drops the warning icon on files in use, since they are already annotated. Upload opens the file chooser straight away, and a new upload is pre-selected as soon as it appears. A task's Type list shows every choice without scrolling. After an upload, the task dialog no longer pulls focus out of the field you are typing in, such as Install path.
 
 ### Focus Search
 

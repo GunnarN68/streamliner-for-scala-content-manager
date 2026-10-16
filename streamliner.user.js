@@ -2583,6 +2583,8 @@
   var UPLOADER_SIGNS = ['renderModal', 'isValidFileExtension', 'windowsupdates'];
   var SELECT_MODULE = 'components/inlineEdit/select';
   var SELECT_SIGNS = ['buildPopup'];
+  var MODAL_MODULE = 'components/modal/modal';
+  var MODAL_SIGNS = ['showModal:function', 'positionModal:function', 'scrollKiller'];
   var MAINTENANCE_PAGE = /^#maintenanceJob/i;
   var TALL_CLASS = 'streamliner-tall';
   var PICKER_ALL = 999999;          // what the app itself asks for to mean "all"
@@ -2605,6 +2607,7 @@
   var pickerPatched = false;
   var uploaderPatched = false;
   var selectPatched = false;
+  var modalPatched = false;
   var livePicker = null;            // the fileSelector view currently open
   var pickerBatch = [];             // names seen in the upload in progress
   var pickerTarget = null;          // name to select, until the user picks
@@ -2841,6 +2844,39 @@
 
   // The popup carries no sign of which dropdown opened it, so it is marked as
   // it is built, when the dropdown is the task's command selector.
+  // A dialog's showModal moves focus a moment later: to Save on 11.x and
+  // 12.x, to a text field or the close button on 13.60. It runs again on every
+  // positionModal, and after an upload the picker refreshes its hidden list
+  // every five seconds for half a minute. Each refresh repositions the task
+  // dialog, so focus jumps out of the Install path field as you type. Page
+  // scrolls and window resizes do the same. While a field in the dialog has
+  // focus, its other controls ignore focus() for that moment. Opening a
+  // dialog is unaffected, since nothing in it has focus yet.
+  var MODAL_FOCUS_GUARD_MS = 400;
+
+  function patchModal() {
+    if (modalPatched) return;
+    var Modal = appModule(MODAL_MODULE, MODAL_SIGNS, MAINTENANCE_PAGE);
+    if (!Modal || !Modal.prototype) return;
+    modalPatched = true;
+
+    wrapBefore(Modal.prototype, 'showModal', function () {
+      if (!pickerOn() || !MAINTENANCE_PAGE.test(location.hash || '')) return;
+      var active = document.activeElement;
+      if (!this.el || !isTypingTarget(active) || !this.el.contains(active)) return;
+      var others = this.el.querySelectorAll('a, button, input, select, textarea, dt, [tabindex]');
+      var held = [];
+      for (var i = 0; i < others.length; i++) {
+        if (others[i] === active || Object.prototype.hasOwnProperty.call(others[i], 'focus')) continue;
+        others[i].focus = function () {};
+        held.push(others[i]);
+      }
+      nativeSetTimeout(function () {
+        for (var k = 0; k < held.length; k++) delete held[k].focus;
+      }, MODAL_FOCUS_GUARD_MS);
+    });
+  }
+
   function patchTaskTypeSelect() {
     if (selectPatched) return;
     var Select = appModule(SELECT_MODULE, SELECT_SIGNS, MAINTENANCE_PAGE);
@@ -2941,6 +2977,7 @@
     patchFilePicker();
     patchUploader();
     patchTaskTypeSelect();
+    patchModal();
     bindPickerEvents();
     if (!pickerOn()) return;
     if (pickerEl && pickerEl.isConnected) return;
@@ -5232,6 +5269,7 @@
         suggestionKeyDown: suggestionKeyDown,
         highlightFirst: highlightFirst,
         applyPlaylistLink: applyPlaylistLink,
+        patchModal: patchModal,
         absoluteUrls: absoluteUrls,
         darkDeclarations: darkDeclarations,
         keepLastCopies: keepLastCopies,

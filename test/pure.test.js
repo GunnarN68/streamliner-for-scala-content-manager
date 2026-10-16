@@ -541,6 +541,44 @@ test('timeslot playlist link: a playlist the server returned is linked', () => {
   assert.equal(seen.pop(), false, 'off means off');
 });
 
+test('maintenance dialog: a refresh does not pull focus out of a field', () => {
+  const app = load({ hash: '#maintenanceJob/1/?*tab=tasks' });
+  const field = { tagName: 'INPUT' };
+  const save = { tagName: 'BUTTON' };
+  const native = [];
+  const proto = { focus() { native.push(this); } };
+  Object.setPrototypeOf(save, proto);
+  Object.setPrototypeOf(field, proto);
+  const Modal = function () {
+    this.el = { contains: (n) => n === field || n === save, querySelectorAll: () => [field, save] };
+  };
+  // The app's own, without the delay: whatever it focuses, it focuses.
+  Modal.prototype.showModal = function () { save.focus(); };
+  const mods = { 'components/modal/modal': Modal };
+  const req = (name) => mods[name];
+  req.defined = (name) => name in mods;
+  app.window.require = req;
+  app.internals.patchModal();
+  const modal = new Modal();
+
+  app.document.activeElement = null;
+  modal.showModal();
+  assert.equal(native.length, 1, 'opening the dialog focuses Save as before');
+
+  app.document.activeElement = field;
+  modal.showModal();
+  assert.equal(native.length, 1, 'typing in the dialog keeps the focus');
+  const restore = app.timers[app.timers.length - 1];
+  restore.fn();
+  save.focus();
+  assert.equal(native.length, 2, 'Save can be focused again afterwards');
+  assert.equal(Object.prototype.hasOwnProperty.call(field, 'focus'), false, 'the field itself is never touched');
+
+  app.streamliner.config.maintenanceFilesFixes = false;
+  modal.showModal();
+  assert.equal(native.length, 3, 'off means off');
+});
+
 // A stand-in for a Bootstrap typeahead: the input, the last query, and a menu
 // whose find('.active') answers with the one active item, if any.
 function fakeTypeahead(value, query, activeItem) {
