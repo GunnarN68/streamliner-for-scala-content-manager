@@ -76,6 +76,10 @@ The schedule page lists a channel's frames by name under the frame map, each one
 
 Player Properties shows a Generate Plan button when there are no unsaved changes, so you need not go back to the player list to generate the plan.
 
+### Wide Channel Pickers
+
+Player Properties shows wider channel pickers, so a long channel name fits in full. Content Manager makes each one 200px wide. The default here is 400px.
+
 ### Open Workgroup Root
 
 Workgroup trees open with Root expanded, so the first level of workgroups shows without a click. This applies wherever you pick workgroups, and on System > Workgroups.

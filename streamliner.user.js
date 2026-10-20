@@ -125,6 +125,11 @@
     // so the plan can be made without going back to the player list.
     playerGeneratePlan: true,
 
+    // Player Properties gives each display's channel picker 200px, which cuts
+    // off all but a short channel name. This widens it.
+    wideChannelPicker: true,
+    channelPickerWidth: '400px',
+
     // Every workgroup tree opens with Root collapsed. This opens Root once as
     // the tree renders, so its first level shows. Collapsing it again sticks.
     expandWorkgroupRoot: true,
@@ -1344,6 +1349,45 @@
   function removeListFilters() {
     if (filtersEl && filtersEl.parentNode) filtersEl.parentNode.removeChild(filtersEl);
     filtersEl = null;
+  }
+
+  // -------------------------------------------------------- channel picker
+
+  // Player Properties has one channel picker per display, up to four, in the
+  // view whose className is playerDisplaySelector. Every version from 11.01 to
+  // 13.60 builds it as a Select2 with width "200px", which Select2 writes
+  // inline on .select2-container. Select2 sizes its dropdown from the
+  // container when it opens, so the list widens with it.
+  //
+  // On 12.00 and later a player licensed for campaigns shows a box of the
+  // app's own in place of the Select2, until it is clicked. light.css fixes
+  // that box at 200px, its inner .comboChannelSelector at 180px and the name
+  // in it at 135px. Each keeps the same distance from the new width.
+  //
+  // `html body` for the same reason as the list filters: the rules must win
+  // wherever this sheet ends up in the document.
+  var CHANNEL_PICKER_CSS = [
+    'html body .playerDisplaySelector .select2-container { width: %W% !important; }',
+    'html body .playerDisplaySelector .campaignChannelSelector { width: %W% !important; }',
+    'html body .playerDisplaySelector .comboChannelSelector { width: calc(%W% - 20px) !important; }',
+    'html body .playerDisplaySelector .comboChannelSelector .name { width: calc(%W% - 65px) !important; }'
+  ].join('\n');
+
+  var channelPickerEl = null;
+
+  function applyChannelPicker() {
+    if (!CONFIG.wideChannelPicker) return;
+    if (channelPickerEl && channelPickerEl.isConnected) return;
+    if (!(document.head || document.documentElement)) return;
+    channelPickerEl = makeStyle('cm-helper-channel-picker');
+    var width = cssValue('channelPickerWidth', 'width');
+    channelPickerEl.textContent = CHANNEL_PICKER_CSS.split('%W%').join(width);
+    log('channel pickers set to ' + width);
+  }
+
+  function removeChannelPicker() {
+    if (channelPickerEl && channelPickerEl.parentNode) channelPickerEl.parentNode.removeChild(channelPickerEl);
+    channelPickerEl = null;
   }
 
   // --------------------------------------------------------- workgroup root
@@ -4169,6 +4213,7 @@
     fixSignIn: '11.x needs it for the button, 13.50 for Enter.',
     pinnedMenuWidth: 'Wider menus take width from the page content.',
     listFilterHeight: 'How tall a filter list may get before it scrolls.',
+    channelPickerWidth: 'Content Manager\'s own width is 200px.',
     templateUsageConcurrency: 'How many usage counts or names to fetch at once. Higher is faster and leans harder on the server.',
     usageNameCount: 'How many names to list after each count, such as 2 Playlists (A, B). 0 lists none.',
     searchHotkey: 'A key on its own, or with modifiers: "/", "cmd+k", "ctrl+k", "alt+s".',
@@ -4281,6 +4326,13 @@
       blurb: 'Player Properties shows a Generate Plan button when there are no unsaved ' +
              'changes, so you need not go back to the player list to generate the plan.',
       advanced: []
+    },
+    {
+      title: 'Wide Channel Pickers',
+      master: 'wideChannelPicker',
+      blurb: 'Player Properties shows wider channel pickers, so a long channel name ' +
+             'fits in full.',
+      advanced: ['channelPickerWidth']
     },
     {
       title: 'Open Workgroup Root',
@@ -4739,6 +4791,7 @@
     removePinnedMenu();
     // Only a stylesheet, so taking it out is the whole teardown.
     removeListFilters();
+    removeChannelPicker();
     // Torn down only when it is off, unlike the two above. Those rebuild from
     // a stylesheet and cost nothing. This one would re-fetch every count, so
     // saving any setting at all would fire a request per used template. No
@@ -5085,6 +5138,7 @@
     runFeature('nonScheduledContent', applyNonScheduledContent);
     runFeature('frameList', applyFrameList);
     runFeature('generatePlan', applyGeneratePlan);
+    runFeature('channelPicker', applyChannelPicker);
     runFeature('workgroupRoot', applyWorkgroupRoot);
     runFeature('userMenu', installUserMenuItem);
     runFeature('welcome', welcomeOnce);
