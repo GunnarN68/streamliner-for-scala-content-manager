@@ -9,6 +9,7 @@ Streamliner does not modify the Content Manager server or any of its data. Excep
 * Bypass Usage Dialog
 * Maintenance Files Fixes
 * Search Suggestions
+* Player Metadata Columns
 
 To configure Streamliner, click your username in the upper-right, and select the **Streamliner Settings** entry that is added to that drop-down. In languages other than English, the entry is called **Streamliner**. The first time you sign in to each Content Manager server, Streamliner's settings open automatically.
 
@@ -75,6 +76,14 @@ The schedule page lists a channel's frames by name under the frame map, each one
 ### Player Generate Plan
 
 Player Properties shows a Generate Plan button when there are no unsaved changes, so you need not go back to the player list to generate the plan.
+
+### Player Metadata Columns
+
+On the Players page, open **View Settings** to choose individual player metadata fields. The choices are saved for this Content Manager server and take effect immediately. Selected fields appear as columns to the right of the existing columns in the player list. When the columns exceed the available width, a synchronized horizontal scrollbar appears above the list.
+
+Use Scala's search field to filter players. Click any visible column heading to sort by that field; click it again to reverse the order. Sorting applies only to players loaded on the current page, as indicated above the list.
+
+Click **Update metadata** above the player list to fetch values for the current page. The update makes one GET request for all loaded players and times out after 30 seconds. Searches and page changes display cached values when available and do not fetch metadata automatically. Use **Update metadata** again when values may have changed. Empty fields display a dash; failed requests are reported beside the button.
 
 ### Wide Channel Pickers
 
