@@ -1943,8 +1943,9 @@
   }
 
   function playerMetadataWidth(header, index) {
-    var name = (header.textContent || '').trim();
-    if (index === 0 || name === 'Fav.') return 34;
+    var name = (header.textContent || '').replace(/[▲▼]/g, '').trim();
+    if (index === 0) return 50;
+    if (name === 'Fav.') return 42;
     if (name === 'Name') return 180;
     if (name === 'Type') return 75;
     if (name === 'Site') return 95;
@@ -2040,6 +2041,7 @@
     var needsReorder = rows.some(function (row, i) { return currentRows[i] !== row; });
     if (needsReorder) rows.forEach(function (row) { list.appendChild(row); });
     headers.forEach(function (cell, i) {
+      if (i === 0 || cell.querySelector('input[type="checkbox"]')) return;
       var active = String(i) === playerListSort.key;
       cell.setAttribute('aria-sort', active
         ? (playerListSort.direction > 0 ? 'ascending' : 'descending') : 'none');
@@ -2053,6 +2055,8 @@
     if (!header) return;
     Array.prototype.forEach.call(header.children, function (cell, index) {
       if (cell.hasAttribute('data-cm-helper') && !cell.hasAttribute('data-streamliner-metadata-column')) return;
+      // The first column selects rows. Never attach sorting to it.
+      if (index === 0 || cell.querySelector('input[type="checkbox"]')) return;
       cell.style.cursor = 'pointer';
       cell.title = 'Click to sort; click again to reverse';
       // Scala already draws and updates its own sort triangle for Name. Keep
@@ -2072,8 +2076,7 @@
         cell.setAttribute('data-streamliner-sort-bound', 'true');
         cell.setAttribute('aria-sort', 'none');
         cell.addEventListener('click', function (event) {
-          // The Fav. header may contain Scala's select-all checkbox. Let its
-          // click reach Scala instead of treating it as a sort gesture.
+          // Let interactive controls in other headers keep their native action.
           var target = event.target;
           if (target && target.closest && target.closest('input,button,a,select,label')) return;
           event.stopPropagation();
