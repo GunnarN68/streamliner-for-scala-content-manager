@@ -1813,6 +1813,113 @@
   var playerMetadataPageKey = '';
   var playerMetadataResizeListening = false;
   var playerListSort = { key: '', direction: 1 };
+  var playerAll = {
+    mode: false, queryKey: '', loading: false, complete: false, rows: [],
+    sortKey: 'name', direction: 1, page: 0, generation: 0, xhr: null,
+    error: '', revision: 0, filters: {}
+  };
+  var PLAYER_ALL_BATCH = 250;
+  var PLAYER_ALL_PAGE = 50;
+  var PLAYER_ALL_EMPTY = '__streamliner_empty__';
+
+  function playerAllQuery() {
+    var match = (location.hash || '').match(/^#player\/\?\*?(.*)$/);
+    var params = new URLSearchParams(match ? match[1] : '');
+    var search = params.get('search') || '';
+    var filters = params.get('filters') || '{}';
+    return { search: search, filters: filters, key: JSON.stringify([search, filters]) };
+  }
+
+  function stopPlayerAllMode() {
+    playerAll.generation++;
+    if (playerAll.xhr) playerAll.xhr.abort();
+    playerAll.xhr = null;
+    playerAll.mode = false;
+    playerAll.loading = false;
+    playerAll.revision++;
+    var panel = document.querySelector('[data-streamliner-all-players]');
+    if (panel) panel.remove();
+    var host = document.querySelector('.streamliner-all-player-mode');
+    if (host) host.classList.remove('streamliner-all-player-mode');
+  }
+
+  function startPlayerAllMode() {
+    if (!selectedPlayerMetadata().length) return;
+    var jq = appJquery();
+    var base = usageApiBase();
+    if (!jq || typeof jq.ajax !== 'function' || !base) return;
+    var query = playerAllQuery();
+    var list = document.querySelector('ul.basic');
+    var header = list && list.querySelector('li.header.columns');
+    var sortedCell = header && header.children[Number(playerListSort.key)];
+    var metadataId = sortedCell && sortedCell.getAttribute('data-streamliner-metadata-column');
+    playerAll.sortKey = metadataId || 'name';
+    playerAll.direction = metadataId || (sortedCell && /Name/i.test(sortedCell.textContent || ''))
+      ? playerListSort.direction : 1;
+    if (!playerAll.mode) playerAll.filters = {};
+    playerAll.generation++;
+    if (playerAll.xhr) playerAll.xhr.abort();
+    playerAll.mode = true;
+    playerAll.queryKey = query.key;
+    playerAll.loading = true;
+    playerAll.complete = false;
+    playerAll.rows = [];
+    playerAll.page = 0;
+    playerAll.error = '';
+    playerAll.revision++;
+    renderPlayerMetadataList();
+    var generation = playerAll.generation;
+    var seen = {};
+    function fetchBatch(offset) {
+      if (generation !== playerAll.generation) return;
+      var path = 'players/search?offset=' + offset + '&limit=' + PLAYER_ALL_BATCH +
+        '&sort=name&listOnly=true&fields=' + encodeURIComponent('id,name,metadataValue') +
+        '&search=' + encodeURIComponent(query.search) +
+        '&filters=' + encodeURIComponent(query.filters);
+      playerAll.xhr = jq.ajax({
+        type: 'GET', url: base + path, dataType: 'json', timeout: 30000,
+        success: function (data) {
+          if (generation !== playerAll.generation) return;
+          if (!data || !Array.isArray(data.list)) {
+            playerAll.error = 'Could not load all matching players. Try Refresh.';
+            playerAll.loading = false;
+            playerAll.revision++;
+            renderPlayerMetadataList();
+            return;
+          }
+          var added = 0;
+          data.list.forEach(function (player) {
+            if (!player || player.id === undefined || seen[player.id]) return;
+            seen[player.id] = true;
+            added++;
+            var values = playerMetadataValues(player);
+            playerAll.rows.push({ id: player.id, name: String(player.name || ''), values: values });
+            playerMetadataCache[String(player.id)] = { values: values, at: Date.now() };
+          });
+          // A repeated page means this server ignored offset; never claim that
+          // the partial result is a complete global sort.
+          if (data.list.length && !added) {
+            playerAll.error = 'The server repeated a page. Global sorting is unavailable.';
+            playerAll.loading = false;
+          } else if (data.list.length < PLAYER_ALL_BATCH) {
+            playerAll.loading = false;
+            playerAll.complete = true;
+          }
+          playerAll.revision++;
+          renderPlayerMetadataList();
+          if (playerAll.loading) fetchBatch(offset + data.list.length);
+        },
+        error: function (_xhr, status) {
+          if (generation !== playerAll.generation || status === 'abort') return;
+          playerAll.loading = false;
+          playerAll.error = 'Could not load all matching players. Try Refresh.';
+          playerAll.revision++;
+          renderPlayerMetadataList();
+        }
+      });
+    }
+    fetchBatch(0);
+  }
 
   function loadPlayerMetadataColumns() {
     try {
@@ -2138,6 +2245,268 @@
     }
   }
 
+  function playerAllFilteredRows(columns) {
+    return playerAll.rows.filter(function (player) {
+      return [{ id: 'name', name: 'Name' }].concat(columns).every(function (column) {
+        var key = String(column.id);
+        var filter = playerAll.filters[key];
+        if (!filter) return true;
+        var value = key === 'name' ? player.name : player.values[column.id];
+        var missing = value === null || value === undefined || value === '';
+        if (filter === PLAYER_ALL_EMPTY) return missing;
+        if (missing) return false;
+        if (column.datatype === 'BOOLEAN') {
+          var on = value === true || String(value).toLowerCase() === 'true';
+          return filter === (on ? 'true' : 'false');
+        }
+        if (column.valueType === 'PICKLIST') return String(value) === filter;
+        var text = key === 'name' ? String(value) : playerMetadataText(value, column);
+        return text.toLocaleLowerCase().indexOf(filter.toLocaleLowerCase()) !== -1;
+      });
+    });
+  }
+
+  function playerAllSortedRows(filtered) {
+    var rows = filtered.slice();
+    var definition = selectedPlayerMetadata().filter(function (item) {
+      return String(item.id) === playerAll.sortKey;
+    })[0];
+    rows.sort(function (a, b) {
+      var av = definition ? a.values[definition.id] : a.name;
+      var bv = definition ? b.values[definition.id] : b.name;
+      var aMissing = av === null || av === undefined || av === '';
+      var bMissing = bv === null || bv === undefined || bv === '';
+      if (aMissing !== bMissing) return aMissing ? 1 : -1;
+      var at = definition ? playerMetadataText(av, definition) : String(av || '');
+      var bt = definition ? playerMetadataText(bv, definition) : String(bv || '');
+      var an = Number(at.replace(/,/g, ''));
+      var bn = Number(bt.replace(/,/g, ''));
+      var comparison = !aMissing && !bMissing && isFinite(an) && isFinite(bn)
+        ? an - bn : at.localeCompare(bt, undefined, { numeric: true, sensitivity: 'base' });
+      return comparison ? comparison * playerAll.direction :
+        a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }) || a.id - b.id;
+    });
+    return rows;
+  }
+
+  function renderPlayerAllView(list) {
+    var host = list.parentNode;
+    var panel = host.querySelector('[data-streamliner-all-players]');
+    var sheet = document.querySelector('style[data-streamliner-all-player-layout]');
+    if (!sheet) {
+      sheet = document.createElement('style');
+      sheet.setAttribute('data-cm-helper', 'true');
+      sheet.setAttribute('data-streamliner-all-player-layout', 'true');
+      sheet.textContent = '.streamliner-all-player-mode > ul.basic,' +
+        '.streamliner-all-player-mode > .listFooter,' +
+        '.streamliner-all-player-mode > [data-streamliner-metadata-toolbar],' +
+        '.streamliner-all-player-mode > [data-streamliner-metadata-scroller],' +
+        '.streamliner-all-player-mode > .listHeader .limitSelector,' +
+        '.streamliner-all-player-mode > .listHeader .tally' +
+        '{display:none!important;}';
+      document.head.appendChild(sheet);
+    }
+    host.classList.toggle('streamliner-all-player-mode', playerAll.mode);
+    if (!playerAll.mode) {
+      if (panel) panel.remove();
+      return;
+    }
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.setAttribute('data-cm-helper', 'true');
+      panel.setAttribute('data-streamliner-all-players', 'true');
+      panel.style.cssText = 'margin:8px 10px 16px;padding:12px;border:1px solid #bbb;' +
+        'border-radius:4px;';
+      host.insertBefore(panel, list);
+    }
+    var signature = [playerAll.revision, playerAll.page, playerAll.sortKey,
+      playerAll.direction, playerMetadataColumns.join(',')].join('|');
+    if (panel.getAttribute('data-render-key') === signature) return;
+    panel.setAttribute('data-render-key', signature);
+    panel.textContent = '';
+    var top = document.createElement('div');
+    top.style.cssText = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;';
+    var title = document.createElement('strong');
+    title.textContent = 'All matching players';
+    top.appendChild(title);
+    var status = document.createElement('span');
+    status.setAttribute('role', 'status');
+    status.style.cssText = 'font-size:12px;';
+    status.textContent = playerAll.loading ? 'Loading ' + playerAll.rows.length + ' players…' :
+      (playerAll.error || 'Loaded ' + playerAll.rows.length + ' players. Sort covers all matching players.');
+    top.appendChild(status);
+    var action = document.createElement('button');
+    action.type = 'button';
+    action.textContent = playerAll.loading ? 'Cancel' : 'Refresh';
+    action.addEventListener('click', function () {
+      if (playerAll.loading) stopPlayerAllMode();
+      else startPlayerAllMode();
+      renderPlayerMetadataList();
+    });
+    top.appendChild(action);
+    if (Object.keys(playerAll.filters).some(function (key) { return !!playerAll.filters[key]; })) {
+      var clear = document.createElement('button');
+      clear.type = 'button';
+      clear.textContent = 'Clear filters';
+      clear.addEventListener('click', function () {
+        playerAll.filters = {};
+        playerAll.page = 0;
+        playerAll.revision++;
+        renderPlayerAllView(list);
+      });
+      top.appendChild(clear);
+    }
+    panel.appendChild(top);
+    if (!playerAll.complete) return;
+    var columns = selectedPlayerMetadata();
+    var filtered = playerAllFilteredRows(columns);
+    var sorted = playerAllSortedRows(filtered);
+    status.textContent = 'Showing ' + filtered.length + ' of ' + playerAll.rows.length +
+      ' matching players. Sort covers all loaded matches.';
+    var pageCount = Math.max(1, Math.ceil(sorted.length / PLAYER_ALL_PAGE));
+    playerAll.page = Math.min(playerAll.page, pageCount - 1);
+    var start = playerAll.page * PLAYER_ALL_PAGE;
+    var tableWrap = document.createElement('div');
+    tableWrap.style.cssText = 'overflow-x:auto;';
+    var table = document.createElement('table');
+    table.style.cssText = 'width:100%;border-collapse:collapse;';
+    var thead = document.createElement('thead');
+    var header = document.createElement('tr');
+    [{ id: 'name', name: 'Name' }].concat(columns).forEach(function (column) {
+      var th = document.createElement('th');
+      th.style.cssText = 'text-align:left;padding:7px 9px;border-bottom:1px solid #aaa;' +
+        'min-width:140px;white-space:nowrap;';
+      var sort = document.createElement('button');
+      sort.type = 'button';
+      sort.style.cssText = 'border:0;background:none;font-weight:bold;cursor:pointer;' +
+        'padding:0;color:inherit;';
+      var key = String(column.id);
+      sort.textContent = column.name + (playerAll.sortKey === key ?
+        (playerAll.direction > 0 ? ' ▲' : ' ▼') : '');
+      sort.setAttribute('aria-label', 'Sort all matching players by ' + column.name);
+      sort.addEventListener('click', function () {
+        if (playerAll.sortKey === key) playerAll.direction *= -1;
+        else { playerAll.sortKey = key; playerAll.direction = 1; }
+        playerAll.page = 0;
+        playerAll.revision++;
+        renderPlayerAllView(list);
+      });
+      th.appendChild(sort);
+      header.appendChild(th);
+    });
+    thead.appendChild(header);
+    var filterRow = document.createElement('tr');
+    [{ id: 'name', name: 'Name' }].concat(columns).forEach(function (column) {
+      var td = document.createElement('th');
+      td.style.cssText = 'text-align:left;padding:4px 9px 8px;border-bottom:1px solid #aaa;';
+      var key = String(column.id);
+      var control;
+      if (column.datatype === 'BOOLEAN' || column.valueType === 'PICKLIST') {
+        control = document.createElement('select');
+        var options = [{ value: '', label: 'All values' }];
+        if (column.datatype === 'BOOLEAN') {
+          options.push({ value: 'true', label: 'On' }, { value: 'false', label: 'Off' });
+        } else {
+          (column.predefinedValues || []).forEach(function (choice) {
+            options.push({ value: String(choice.id), label: String(choice.value) });
+          });
+        }
+        options.push({ value: PLAYER_ALL_EMPTY, label: '(Empty)' });
+        options.forEach(function (item) {
+          var option = document.createElement('option');
+          option.value = item.value;
+          option.textContent = item.label;
+          control.appendChild(option);
+        });
+        control.value = playerAll.filters[key] || '';
+        control.addEventListener('change', function () {
+          if (control.value) playerAll.filters[key] = control.value;
+          else delete playerAll.filters[key];
+          playerAll.page = 0;
+          playerAll.revision++;
+          renderPlayerAllView(list);
+        });
+      } else {
+        control = document.createElement('input');
+        control.type = 'search';
+        control.placeholder = 'Filter text…';
+        control.value = playerAll.filters[key] || '';
+        control.addEventListener('input', function () {
+          var caret = control.selectionStart;
+          if (control.value) playerAll.filters[key] = control.value;
+          else delete playerAll.filters[key];
+          playerAll.page = 0;
+          playerAll.revision++;
+          renderPlayerAllView(list);
+          var replacement = panel.querySelector('[data-streamliner-filter-key="' + key + '"]');
+          if (replacement) {
+            replacement.focus();
+            if (caret !== null) replacement.setSelectionRange(caret, caret);
+          }
+        });
+      }
+      control.setAttribute('data-streamliner-filter-key', key);
+      control.setAttribute('aria-label', 'Filter ' + column.name);
+      control.style.cssText = 'width:100%;max-width:220px;box-sizing:border-box;';
+      td.appendChild(control);
+      filterRow.appendChild(td);
+    });
+    thead.appendChild(filterRow);
+    table.appendChild(thead);
+    var body = document.createElement('tbody');
+    sorted.slice(start, start + PLAYER_ALL_PAGE).forEach(function (player) {
+      var tr = document.createElement('tr');
+      var nameCell = document.createElement('td');
+      nameCell.style.cssText = 'padding:7px 9px;border-bottom:1px solid #ddd;';
+      var link = document.createElement('a');
+      link.href = '#player/' + encodeURIComponent(player.id);
+      link.textContent = player.name || String(player.id);
+      nameCell.appendChild(link);
+      tr.appendChild(nameCell);
+      columns.forEach(function (column) {
+        var td = document.createElement('td');
+        td.style.cssText = 'padding:7px 9px;border-bottom:1px solid #ddd;';
+        td.textContent = playerMetadataText(player.values[column.id], column);
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+    if (!sorted.length) {
+      var emptyRow = document.createElement('tr');
+      var emptyCell = document.createElement('td');
+      emptyCell.colSpan = columns.length + 1;
+      emptyCell.style.cssText = 'padding:14px 9px;';
+      emptyCell.textContent = 'No players match these filters.';
+      emptyRow.appendChild(emptyCell);
+      body.appendChild(emptyRow);
+    }
+    table.appendChild(body);
+    tableWrap.appendChild(table);
+    panel.appendChild(tableWrap);
+    var footer = document.createElement('div');
+    footer.style.cssText = 'display:flex;align-items:center;gap:10px;margin-top:10px;';
+    function pageButton(label, next, disabled) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = label;
+      button.disabled = disabled;
+      button.addEventListener('click', function () {
+        playerAll.page = next;
+        playerAll.revision++;
+        renderPlayerAllView(list);
+        panel.scrollIntoView({ block: 'start' });
+      });
+      footer.appendChild(button);
+    }
+    pageButton('Previous', playerAll.page - 1, playerAll.page === 0);
+    var tally = document.createElement('span');
+    tally.textContent = sorted.length ? (start + 1) + '–' +
+      Math.min(start + PLAYER_ALL_PAGE, sorted.length) + ' of ' + sorted.length : '0 players';
+    footer.appendChild(tally);
+    pageButton('Next', playerAll.page + 1, playerAll.page >= pageCount - 1);
+    panel.appendChild(footer);
+  }
+
   function renderPlayerMetadataList() {
     var list = document.querySelector('ul.basic');
     if (!list || !list.parentNode) return;
@@ -2147,6 +2516,7 @@
     var toolbar = list.parentNode.querySelector('[data-streamliner-metadata-toolbar]');
     var scroller = list.parentNode.querySelector('[data-streamliner-metadata-scroller]');
     if (!columns.length) {
+      if (playerAll.mode) stopPlayerAllMode();
       list.classList.remove('streamliner-metadata-columns');
       Array.prototype.forEach.call(list.querySelectorAll('[data-streamliner-metadata-column]'),
         function (cell) { cell.parentNode.removeChild(cell); });
@@ -2170,6 +2540,7 @@
         return;
       }
       renderPlayerListControls(list);
+      renderPlayerAllView(list);
       return;
     }
     var header = list.querySelector('li.header.columns');
@@ -2207,6 +2578,7 @@
     if (status.textContent !== statusText) status.textContent = statusText;
     renderPlayerMetadataScroller(list);
     renderPlayerListControls(list);
+    renderPlayerAllView(list);
   }
 
   function renderPlayerListControls(list) {
@@ -2218,13 +2590,41 @@
       toolbar = document.createElement('div');
       toolbar.setAttribute('data-cm-helper', 'true');
       toolbar.setAttribute('data-streamliner-player-list-controls', 'true');
-      toolbar.style.cssText = 'padding:6px 10px;';
+      toolbar.style.cssText = 'padding:6px 10px;display:flex;align-items:center;' +
+        'gap:10px;flex-wrap:wrap;';
+      var current = document.createElement('button');
+      current.type = 'button';
+      current.textContent = 'Current page';
+      current.setAttribute('data-streamliner-current-page', 'true');
+      current.addEventListener('click', function () {
+        stopPlayerAllMode();
+        renderPlayerMetadataList();
+      });
+      toolbar.appendChild(current);
+      var all = document.createElement('button');
+      all.type = 'button';
+      all.textContent = 'All matching players';
+      all.setAttribute('data-streamliner-all-matching', 'true');
+      all.addEventListener('click', startPlayerAllMode);
+      toolbar.appendChild(all);
       var hint = document.createElement('div');
       hint.textContent = 'Use Scala’s search field to filter players. Sorting applies only to players loaded on the current page.';
       hint.style.cssText = 'font-size:12px;color:#8a5a00;';
       toolbar.appendChild(hint);
       list.parentNode.insertBefore(toolbar, list);
     }
+    var currentButton = toolbar.querySelector('[data-streamliner-current-page]');
+    var allButton = toolbar.querySelector('[data-streamliner-all-matching]');
+    currentButton.disabled = !playerAll.mode;
+    allButton.disabled = playerAll.mode || !selectedPlayerMetadata().length;
+    allButton.title = selectedPlayerMetadata().length ?
+      'Load and sort all players matching Scala’s current search and filters' :
+      'Choose metadata columns in View Settings first';
+    var hint = toolbar.querySelector('div');
+    var hintText = playerAll.mode ?
+      'Scala search and filters define which players are loaded. Use the table below to sort the complete result.' :
+      'Use Scala’s search field to filter players. Sorting in this view covers only the current page.';
+    if (hint.textContent !== hintText) hint.textContent = hintText;
     applyPlayerListFilterSort(list);
   }
 
@@ -2458,7 +2858,11 @@
   }
 
   function applyPlayerMetadata() {
-    if (!playerListVisible()) return;
+    if (!playerListVisible()) {
+      if (playerAll.mode) stopPlayerAllMode();
+      return;
+    }
+    if (playerAll.mode && playerAll.queryKey !== playerAllQuery().key) stopPlayerAllMode();
     if (!CONFIG.playerMetadataColumnsEnabled) {
       renderPlayerMetadataList();
       return;
