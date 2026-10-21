@@ -1969,10 +1969,10 @@
       'float:none!important;box-sizing:border-box!important;margin:0!important;' +
       'flex-shrink:0!important;}' +
       'ul.basic.streamliner-metadata-columns>li.columns>.streamliner-metadata-cell{' +
-      'width:180px!important;flex:0 0 180px!important;padding:8px!important;' +
+      'width:180px!important;flex:0 0 180px!important;padding-left:8px!important;padding-right:8px!important;' +
       'overflow-wrap:anywhere;border-left:1px solid #ddd;}' +
       'ul.basic.streamliner-metadata-columns>li.header>.streamliner-metadata-cell{' +
-      'font-weight:bold;position:relative;top:-1px;}';
+      'font-weight:bold;}';
     nativeHeaders.forEach(function (cell, index) {
       var width = playerMetadataWidth(cell, index);
       css += 'ul.basic.streamliner-metadata-columns>li.columns>.column:nth-child(' +
