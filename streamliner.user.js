@@ -127,6 +127,9 @@
     // Adds local row filters to the Network Activity dialog under Player Problems.
     networkActivityFilters: true,
 
+    // Enables the added columns and local sorting on the Players page.
+    playerMetadataColumnsEnabled: true,
+
     // Player Properties gives each display's channel picker 200px, which cuts
     // off all but a short channel name. This widens it.
     wideChannelPicker: true,
@@ -2078,6 +2081,7 @@
         cell.setAttribute('data-streamliner-sort-bound', 'true');
         cell.setAttribute('aria-sort', 'none');
         cell.addEventListener('click', function (event) {
+          if (!CONFIG.playerMetadataColumnsEnabled) return;
           // Let interactive controls in other headers keep their native action.
           var target = event.target;
           if (target && target.closest && target.closest('input,button,a,select,label')) return;
@@ -2139,7 +2143,7 @@
     if (!list || !list.parentNode) return;
     var old = list.parentNode.querySelector('[data-streamliner-player-metadata]');
     if (old) old.parentNode.removeChild(old);
-    var columns = selectedPlayerMetadata();
+    var columns = CONFIG.playerMetadataColumnsEnabled ? selectedPlayerMetadata() : [];
     var toolbar = list.parentNode.querySelector('[data-streamliner-metadata-toolbar]');
     var scroller = list.parentNode.querySelector('[data-streamliner-metadata-scroller]');
     if (!columns.length) {
@@ -2148,6 +2152,23 @@
         function (cell) { cell.parentNode.removeChild(cell); });
       if (toolbar) toolbar.parentNode.removeChild(toolbar);
       if (scroller) scroller.parentNode.removeChild(scroller);
+      if (!CONFIG.playerMetadataColumnsEnabled) {
+        var controls = list.parentNode.querySelector('[data-streamliner-player-list-controls]');
+        if (controls) controls.remove();
+        Array.prototype.forEach.call(list.querySelectorAll('li.header.columns > .column'),
+          function (cell) {
+            if (!cell.hasAttribute('data-streamliner-sort-bound')) return;
+            var arrow = cell.querySelector('[data-streamliner-sort-arrow]');
+            if (arrow) arrow.remove();
+            cell.removeAttribute('aria-sort');
+            if (cell.title === 'Click to sort; click again to reverse') cell.removeAttribute('title');
+            cell.style.cursor = '';
+          });
+        var settings = document.querySelector('[data-streamliner-metadata-settings]');
+        if (settings) settings.remove();
+        playerListSort.key = '';
+        return;
+      }
       renderPlayerListControls(list);
       return;
     }
@@ -2438,6 +2459,10 @@
 
   function applyPlayerMetadata() {
     if (!playerListVisible()) return;
+    if (!CONFIG.playerMetadataColumnsEnabled) {
+      renderPlayerMetadataList();
+      return;
+    }
     var pageKey = playerMetadataRows().map(function (row) {
       return row.getAttribute('data-id');
     }).join(',');
@@ -5050,6 +5075,13 @@
       master: 'playerGeneratePlan',
       blurb: 'Player Properties shows a Generate Plan button when there are no unsaved ' +
              'changes, so you need not go back to the player list to generate the plan.',
+      advanced: []
+    },
+    {
+      title: 'Player Metadata Columns',
+      master: 'playerMetadataColumnsEnabled',
+      blurb: 'Adds selectable metadata columns and sorting to the Players page. ' +
+             'Choose individual fields in Players > View Settings.',
       advanced: []
     },
     {
