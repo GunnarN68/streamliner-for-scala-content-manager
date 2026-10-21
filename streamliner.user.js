@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Streamliner for Scala Content Manager
 // @namespace    https://github.com/pcherna/streamliner-for-scala-content-manager
-// @version      1.53.0
+// @version      1.53.0.7
 // @description  Conveniences and fixes for Scala Content Manager: dark mode, speedup, text-only menus, search hotkey, host badge, login fix.
 // @match        *://*/ContentManager/*
 // @match        *://*/ContentManager
@@ -124,6 +124,8 @@
     // Player Properties offers Generate Plan while there is nothing to save,
     // so the plan can be made without going back to the player list.
     playerGeneratePlan: true,
+    // Adds local row filters to the Network Activity dialog under Player Problems.
+    networkActivityFilters: true,
 
     // Every workgroup tree opens with Root collapsed. This opens Root once as
     // the tree renders, so its first level shows. Collapsing it again sticks.
@@ -214,7 +216,7 @@
     } catch (e) { /* private mode */ }
   }
 
-  var VERSION = '1.53.0';
+  var VERSION = '1.53.0.7';
   var TAG = '[streamliner]';
   var POLL_MS = 250;
   var STYLE_ID = 'cm-helper-speed';
@@ -1691,6 +1693,674 @@
       success: function (data) { done(data || {}, null); },
       error: function (xhr) { done(null, xhr); }
     });
+  }
+
+  // ---------------------------------------------------- player metadata columns
+
+  // Metadata definitions are network-wide, but values belong to a player.
+  // The columns deliberately fetch values only on the user's request: a large
+  // player page can otherwise turn every search and page change into many GETs.
+  var PLAYER_METADATA_KEY = 'streamlinerPlayerMetadataColumns';
+  var playerMetadataColumns = [];
+  var playerMetadataDefinitions = null;
+  var playerMetadataLoading = false;
+  var playerMetadataFailed = false;
+  var playerMetadataCache = {};
+  var playerMetadataErrors = {};
+  var playerMetadataRefreshing = false;
+  var playerMetadataProgress = '';
+  var playerMetadataRevision = 0;
+  var playerMetadataFetchGeneration = 0;
+  var playerMetadataPageKey = '';
+  var playerMetadataResizeListening = false;
+  var playerListSort = { key: '', direction: 1 };
+
+  function loadPlayerMetadataColumns() {
+    try {
+      var saved = JSON.parse(window.localStorage.getItem(PLAYER_METADATA_KEY) || '[]');
+      if (Array.isArray(saved)) playerMetadataColumns = saved.filter(function (id) {
+        return typeof id === 'number' && isFinite(id);
+      });
+    } catch (e) { /* unavailable storage or an old invalid value */ }
+  }
+
+  function savePlayerMetadataColumns() {
+    try {
+      window.localStorage.setItem(PLAYER_METADATA_KEY, JSON.stringify(playerMetadataColumns));
+    } catch (e) { /* private mode */ }
+  }
+
+  function playerListVisible() {
+    return /^#player(?:\/\?|\/?$)/.test(location.hash || '');
+  }
+
+  function playerMetadataGet(path, done) {
+    var jq = appJquery();
+    var base = usageApiBase();
+    if (!jq || typeof jq.ajax !== 'function' || !base) { done(null); return; }
+    jq.ajax({
+      type: 'GET',
+      url: base + path,
+      dataType: 'json',
+      timeout: 30000,
+      success: function (data) { done(data || null); },
+      error: function () { done(null); }
+    });
+  }
+
+  function loadPlayerMetadataDefinitions(force) {
+    if (playerMetadataDefinitions || playerMetadataLoading || (playerMetadataFailed && !force)) return;
+    if (!appJquery() || !usageApiBase()) return;
+    playerMetadataLoading = true;
+    playerMetadataFailed = false;
+    playerMetadataRevision++;
+    renderPlayerMetadataSettings();
+    playerMetadataGet('playerMetadata?offset=0&limit=1000', function (data) {
+      playerMetadataLoading = false;
+      if (data && Array.isArray(data.list)) {
+        playerMetadataDefinitions = data.list.filter(function (item) {
+          return item && typeof item.id === 'number' && typeof item.name === 'string';
+        }).sort(function (a, b) { return (a.order || 0) - (b.order || 0); });
+      } else playerMetadataFailed = true;
+      playerMetadataRevision++;
+      applyPlayerMetadata();
+    });
+  }
+
+  function selectedPlayerMetadata() {
+    if (!playerMetadataDefinitions) return [];
+    return playerMetadataDefinitions.filter(function (item) {
+      return playerMetadataColumns.indexOf(item.id) !== -1;
+    });
+  }
+
+  function playerMetadataRows() {
+    return Array.prototype.slice.call(document.querySelectorAll('ul.basic > li.columns.item'))
+      .filter(function (row) { return /^\d+$/.test(row.getAttribute('data-id') || ''); });
+  }
+
+  function playerMetadataValues(data) {
+    var values = {};
+    var list = data && Array.isArray(data.metadataValue) ? data.metadataValue : [];
+    list.forEach(function (entry) {
+      var definition = entry && entry.playerMetadata;
+      if (!definition || typeof definition.id !== 'number') return;
+      values[definition.id] = entry.value;
+    });
+    return values;
+  }
+
+  function playerMetadataText(value, definition) {
+    if (value === null || value === undefined || value === '') return '—';
+    if (definition.datatype === 'BOOLEAN') {
+      if (value === true || String(value).toLowerCase() === 'true') return 'On';
+      if (value === false || String(value).toLowerCase() === 'false') return 'Off';
+    }
+    if (definition.valueType === 'PICKLIST' && Array.isArray(definition.predefinedValues)) {
+      for (var i = 0; i < definition.predefinedValues.length; i++) {
+        var choice = definition.predefinedValues[i];
+        if (String(choice.id) === String(value)) return String(choice.value);
+      }
+    }
+    return String(value);
+  }
+
+  function refreshPlayerMetadata() {
+    if (playerMetadataRefreshing) return;
+    var rows = playerMetadataRows();
+    var ids = rows.map(function (row) { return row.getAttribute('data-id'); });
+    if (!ids.length) return;
+    playerMetadataRefreshing = true;
+    playerMetadataPageKey = ids.join(',');
+    var generation = ++playerMetadataFetchGeneration;
+    playerMetadataRevision++;
+    playerMetadataProgress = 'Updating metadata for ' + ids.length + ' players…';
+    applyPlayerMetadata();
+    var filters = JSON.stringify({ id: { values: ids.map(function (id) { return Number(id); }) } });
+    var path = 'players/search?offset=0&limit=' + ids.length + '&sort=name&listOnly=true' +
+      '&fields=' + encodeURIComponent('id,metadataValue') +
+      '&filters=' + encodeURIComponent(filters);
+    playerMetadataGet(path, function (data) {
+      if (generation !== playerMetadataFetchGeneration) return;
+      var found = {};
+      if (data && Array.isArray(data.list)) {
+        data.list.forEach(function (player) {
+          if (!player || player.id === undefined) return;
+          found[String(player.id)] = player;
+        });
+      }
+      var failures = 0;
+      ids.forEach(function (id) {
+        var player = found[id];
+        // Content Manager may omit metadataValue when a player has no values.
+        if (player) {
+          playerMetadataCache[id] = { values: playerMetadataValues(player), at: Date.now() };
+          delete playerMetadataErrors[id];
+        } else {
+          playerMetadataErrors[id] = true;
+          failures++;
+        }
+      });
+      playerMetadataRefreshing = false;
+      playerMetadataProgress = 'Updated ' + (ids.length - failures) + ' of ' +
+        ids.length + ' players' + (failures ? '; ' + failures + ' failed' : '') + '.';
+      applyPlayerMetadata();
+    });
+  }
+
+  function playerMetadataWidth(header, index) {
+    var name = (header.textContent || '').trim();
+    if (index === 0 || name === 'Fav.') return 34;
+    if (name === 'Name') return 180;
+    if (name === 'Type') return 75;
+    if (name === 'Site') return 95;
+    if (name === 'Channels') return 165;
+    if (name === 'Status') return 160;
+    if (name === 'Plan') return 60;
+    if (name === 'Download') return 95;
+    if (name === 'Owner Workgroup') return 145;
+    return 120;
+  }
+
+  function renderPlayerMetadataLayout(list, header) {
+    var nativeHeaders = Array.prototype.filter.call(header.children, function (cell) {
+      return !cell.hasAttribute('data-streamliner-metadata-column');
+    });
+    var css = 'ul.basic.streamliner-metadata-columns{overflow-x:auto!important;}' +
+      'ul.basic.streamliner-metadata-columns>li.columns{' +
+      'display:flex!important;width:max-content!important;min-width:100%!important;' +
+      'overflow:visible!important;}' +
+      'ul.basic.streamliner-metadata-columns>li.columns>.column{' +
+      'float:none!important;box-sizing:border-box!important;margin:0!important;' +
+      'flex-shrink:0!important;}' +
+      'ul.basic.streamliner-metadata-columns>li.columns>.streamliner-metadata-cell{' +
+      'width:180px!important;flex:0 0 180px!important;padding:8px!important;' +
+      'overflow-wrap:anywhere;border-left:1px solid #ddd;}' +
+      'ul.basic.streamliner-metadata-columns>li.header>.streamliner-metadata-cell{' +
+      'font-weight:bold;position:relative;top:-1px;}';
+    nativeHeaders.forEach(function (cell, index) {
+      var width = playerMetadataWidth(cell, index);
+      css += 'ul.basic.streamliner-metadata-columns>li.columns>.column:nth-child(' +
+        (index + 1) + '){width:' + width + 'px!important;flex:0 0 ' + width + 'px!important;}';
+    });
+    var sheet = document.querySelector('style[data-streamliner-metadata-layout]');
+    if (!sheet) {
+      sheet = document.createElement('style');
+      sheet.setAttribute('data-cm-helper', 'true');
+      sheet.setAttribute('data-streamliner-metadata-layout', 'true');
+      document.head.appendChild(sheet);
+    }
+    if (sheet.textContent !== css) sheet.textContent = css;
+  }
+
+  function renderPlayerMetadataCells(parent, columns, values, error, isHeader) {
+    var current = Array.prototype.filter.call(parent.children, function (cell) {
+      return cell.hasAttribute('data-streamliner-metadata-column');
+    });
+    if (current.length !== columns.length || current.some(function (cell, index) {
+      return cell.getAttribute('data-streamliner-metadata-column') !== String(columns[index].id);
+    })) {
+      current.forEach(function (cell) { cell.parentNode.removeChild(cell); });
+      current = columns.map(function (definition) {
+        var cell = document.createElement('div');
+        cell.className = 'column streamliner-metadata-cell';
+        cell.setAttribute('data-cm-helper', 'true');
+        cell.setAttribute('data-streamliner-metadata-column', String(definition.id));
+        if (definition.description) cell.title = definition.description;
+        parent.appendChild(cell);
+        return cell;
+      });
+    }
+    current.forEach(function (cell, index) {
+      var value = isHeader ? columns[index].name :
+        (values ? playerMetadataText(values[columns[index].id], columns[index]) :
+          (error ? 'Error' : '—'));
+      if (cell.textContent !== value) cell.textContent = value;
+    });
+  }
+
+  // Sort the player rows currently loaded by Scala, including optional metadata.
+  function applyPlayerListFilterSort(list) {
+    var header = list.querySelector('li.header.columns');
+    if (!header) return;
+    var headers = Array.prototype.filter.call(header.children, function (cell) {
+      return !cell.hasAttribute('data-cm-helper') || cell.hasAttribute('data-streamliner-metadata-column');
+    });
+    var rows = playerMetadataRows();
+    if (playerListSort.key === '') return;
+    var index = Number(playerListSort.key);
+    if (!isFinite(index)) return;
+    rows.sort(function (a, b) {
+      var av = (a.children[index] && a.children[index].textContent || '').trim();
+      var bv = (b.children[index] && b.children[index].textContent || '').trim();
+      var an = Number(av.replace(/,/g, ''));
+      var bn = Number(bv.replace(/,/g, ''));
+      var comparison = av !== '' && bv !== '' && isFinite(an) && isFinite(bn)
+        ? an - bn : av.localeCompare(bv, undefined, { numeric: true, sensitivity: 'base' });
+      return comparison * playerListSort.direction;
+    });
+    // Moving rows that are already in the requested order creates DOM
+    // mutations, which schedule another sweep and can make player controls
+    // feel unresponsive. Reorder only when the sequence actually changed.
+    var currentRows = playerMetadataRows();
+    var needsReorder = rows.some(function (row, i) { return currentRows[i] !== row; });
+    if (needsReorder) rows.forEach(function (row) { list.appendChild(row); });
+    headers.forEach(function (cell, i) {
+      var active = String(i) === playerListSort.key;
+      cell.setAttribute('aria-sort', active
+        ? (playerListSort.direction > 0 ? 'ascending' : 'descending') : 'none');
+      var arrow = cell.querySelector('[data-streamliner-sort-arrow]');
+      if (arrow) arrow.textContent = active ? (playerListSort.direction > 0 ? ' ▲' : ' ▼') : '';
+    });
+  }
+
+  function bindPlayerListSort(list) {
+    var header = list.querySelector('li.header.columns');
+    if (!header) return;
+    Array.prototype.forEach.call(header.children, function (cell, index) {
+      if (cell.hasAttribute('data-cm-helper') && !cell.hasAttribute('data-streamliner-metadata-column')) return;
+      cell.style.cursor = 'pointer';
+      cell.title = 'Click to sort; click again to reverse';
+      // Scala already draws and updates its own sort triangle for Name. Keep
+      // that native marker instead of adding a duplicate on the other side.
+      var headerText = (cell.textContent || '').replace(/[▲▼]/g, '').trim();
+      var isNativeName = !cell.hasAttribute('data-streamliner-metadata-column') &&
+        /^Name$/i.test(headerText);
+      if (!isNativeName && !cell.querySelector('[data-streamliner-sort-arrow]')) {
+        var arrow = document.createElement('span');
+        arrow.setAttribute('data-cm-helper', 'true');
+        arrow.setAttribute('data-streamliner-sort-arrow', 'true');
+        arrow.setAttribute('aria-hidden', 'true');
+        arrow.style.cssText = 'font-size:.8em;white-space:pre;';
+        cell.appendChild(arrow);
+      }
+      if (!cell.hasAttribute('data-streamliner-sort-bound')) {
+        cell.setAttribute('data-streamliner-sort-bound', 'true');
+        cell.setAttribute('aria-sort', 'none');
+        cell.addEventListener('click', function (event) {
+          // The Fav. header may contain Scala's select-all checkbox. Let its
+          // click reach Scala instead of treating it as a sort gesture.
+          var target = event.target;
+          if (target && target.closest && target.closest('input,button,a,select,label')) return;
+          event.stopPropagation();
+          if (playerListSort.key === String(index)) playerListSort.direction *= -1;
+          else { playerListSort.key = String(index); playerListSort.direction = 1; }
+          applyPlayerListFilterSort(list);
+        }, true);
+      }
+    });
+  }
+
+  function renderPlayerMetadataScroller(list) {
+    var scroller = list.parentNode.querySelector('[data-streamliner-metadata-scroller]');
+    if (!scroller) {
+      scroller = document.createElement('div');
+      scroller.setAttribute('data-cm-helper', 'true');
+      scroller.setAttribute('data-streamliner-metadata-scroller', 'true');
+      scroller.style.cssText = 'margin:4px 10px 0;overflow-x:auto;overflow-y:hidden;';
+      scroller.setAttribute('role', 'region');
+      scroller.setAttribute('aria-label', 'Scroll player columns horizontally');
+      var spacer = document.createElement('div');
+      spacer.setAttribute('data-streamliner-scroll-spacer', 'true');
+      spacer.style.cssText = 'height:1px;';
+      scroller.appendChild(spacer);
+      scroller.addEventListener('scroll', function () {
+        var currentList = scroller.parentNode && scroller.parentNode.querySelector('ul.basic');
+        if (currentList && Math.round(currentList.scrollLeft) !== Math.round(scroller.scrollLeft)) {
+          currentList.scrollLeft = scroller.scrollLeft;
+        }
+      });
+      list.parentNode.insertBefore(scroller, list);
+    }
+    if (!list.hasAttribute('data-streamliner-metadata-scroll-watch')) {
+      list.setAttribute('data-streamliner-metadata-scroll-watch', 'true');
+      list.addEventListener('scroll', function () {
+        var current = list.parentNode &&
+          list.parentNode.querySelector('[data-streamliner-metadata-scroller]');
+        if (current && Math.round(current.scrollLeft) !== Math.round(list.scrollLeft)) {
+          current.scrollLeft = list.scrollLeft;
+        }
+      });
+    }
+    if (!playerMetadataResizeListening) {
+      window.addEventListener('resize', queueSweep);
+      playerMetadataResizeListening = true;
+    }
+    var spacer = scroller.querySelector('[data-streamliner-scroll-spacer]');
+    var max = Math.max(0, list.scrollWidth - list.clientWidth);
+    scroller.style.display = max ? '' : 'none';
+    spacer.style.width = Math.max(list.scrollWidth, list.clientWidth) + 'px';
+    if (Math.round(scroller.scrollLeft) !== Math.round(list.scrollLeft)) {
+      scroller.scrollLeft = list.scrollLeft;
+    }
+  }
+
+  function renderPlayerMetadataList() {
+    var list = document.querySelector('ul.basic');
+    if (!list || !list.parentNode) return;
+    var old = list.parentNode.querySelector('[data-streamliner-player-metadata]');
+    if (old) old.parentNode.removeChild(old);
+    var columns = selectedPlayerMetadata();
+    var toolbar = list.parentNode.querySelector('[data-streamliner-metadata-toolbar]');
+    var scroller = list.parentNode.querySelector('[data-streamliner-metadata-scroller]');
+    if (!columns.length) {
+      list.classList.remove('streamliner-metadata-columns');
+      Array.prototype.forEach.call(list.querySelectorAll('[data-streamliner-metadata-column]'),
+        function (cell) { cell.parentNode.removeChild(cell); });
+      if (toolbar) toolbar.parentNode.removeChild(toolbar);
+      if (scroller) scroller.parentNode.removeChild(scroller);
+      renderPlayerListControls(list);
+      return;
+    }
+    var header = list.querySelector('li.header.columns');
+    if (!header) return;
+    var rows = playerMetadataRows();
+    list.classList.add('streamliner-metadata-columns');
+    renderPlayerMetadataLayout(list, header);
+    renderPlayerMetadataCells(header, columns, null, false, true);
+    rows.forEach(function (row) {
+      var id = row.getAttribute('data-id');
+      var cached = playerMetadataCache[id];
+      renderPlayerMetadataCells(row, columns, cached && cached.values, playerMetadataErrors[id]);
+    });
+    if (!toolbar) {
+      toolbar = document.createElement('div');
+      toolbar.setAttribute('data-cm-helper', 'true');
+      toolbar.setAttribute('data-streamliner-metadata-toolbar', 'true');
+      toolbar.style.cssText = 'display:flex;align-items:center;gap:10px;' +
+        'flex-wrap:wrap;padding:7px 10px;';
+      var update = document.createElement('button');
+      update.type = 'button';
+      update.addEventListener('click', refreshPlayerMetadata);
+      toolbar.appendChild(update);
+      var status = document.createElement('span');
+      status.style.cssText = 'font-size:12px;opacity:.7';
+      toolbar.appendChild(status);
+      list.parentNode.insertBefore(toolbar, list);
+    }
+    var button = toolbar.querySelector('button');
+    var buttonText = playerMetadataRefreshing ? 'Updating…' : 'Update metadata';
+    if (button.textContent !== buttonText) button.textContent = buttonText;
+    button.disabled = playerMetadataRefreshing || !rows.length;
+    var status = toolbar.querySelector('span');
+    var statusText = playerMetadataProgress || 'Values update only when requested.';
+    if (status.textContent !== statusText) status.textContent = statusText;
+    renderPlayerMetadataScroller(list);
+    renderPlayerListControls(list);
+  }
+
+  function renderPlayerListControls(list) {
+    var header = list.querySelector('li.header.columns');
+    if (!header) return;
+    bindPlayerListSort(list);
+    var toolbar = list.parentNode.querySelector('[data-streamliner-player-list-controls]');
+    if (!toolbar) {
+      toolbar = document.createElement('div');
+      toolbar.setAttribute('data-cm-helper', 'true');
+      toolbar.setAttribute('data-streamliner-player-list-controls', 'true');
+      toolbar.style.cssText = 'padding:6px 10px;';
+      var hint = document.createElement('div');
+      hint.textContent = 'Use Scala’s search field to filter players. Sorting applies only to players loaded on the current page.';
+      hint.style.cssText = 'font-size:12px;color:#8a5a00;';
+      toolbar.appendChild(hint);
+      list.parentNode.insertBefore(toolbar, list);
+    }
+    applyPlayerListFilterSort(list);
+  }
+
+  function renderPlayerMetadataSettings() {
+    var dialogs = document.querySelectorAll('.modal');
+    for (var i = 0; i < dialogs.length; i++) {
+      var modal = dialogs[i];
+      var title = modal.querySelector('.header h4');
+      if (!title || title.textContent.trim() !== 'View Settings') continue;
+      var content = modal.querySelector('section.content');
+      if (!content) return;
+      var old = content.querySelector('[data-streamliner-metadata-settings]');
+      var signature = (playerMetadataDefinitions ? playerMetadataDefinitions.length : 'loading') +
+        '|' + playerMetadataColumns.join(',') + '|' + playerMetadataRevision;
+      if (old && old.getAttribute('data-render-key') === signature) return;
+      var box = document.createElement('div');
+      box.setAttribute('data-cm-helper', 'true');
+      box.setAttribute('data-streamliner-metadata-settings', 'true');
+      box.setAttribute('data-render-key', signature);
+      box.style.cssText = 'margin:18px 12px;padding:12px;border:1px solid #bbb;border-radius:5px;';
+      var head = document.createElement('strong');
+      head.textContent = 'Player Metadata';
+      box.appendChild(head);
+      var note = document.createElement('div');
+      note.textContent = 'Choose metadata columns here. The selection applies immediately. ' +
+        'Use Update metadata above the player list to fetch values for the current page.';
+      note.style.cssText = 'font-size:12px;margin:4px 0 8px;';
+      box.appendChild(note);
+      if (!playerMetadataDefinitions) {
+        var state = document.createElement('span');
+        state.textContent = playerMetadataLoading ? 'Loading metadata fields…' :
+          'Could not load metadata fields.';
+        box.appendChild(state);
+        if (!playerMetadataLoading) {
+          var retry = document.createElement('button');
+          retry.type = 'button';
+          retry.textContent = 'Retry';
+          retry.addEventListener('click', function () { loadPlayerMetadataDefinitions(true); });
+          box.appendChild(retry);
+        }
+      } else {
+        var choices = document.createElement('div');
+        choices.style.cssText = 'display:grid;grid-template-columns:repeat(2,minmax(0,1fr));' +
+          'gap:4px 12px;max-height:210px;overflow:auto;';
+        playerMetadataDefinitions.forEach(function (definition) {
+          var label = document.createElement('label');
+          label.style.cssText = 'display:flex;align-items:center;gap:6px;min-width:0;';
+          var input = document.createElement('input');
+          input.type = 'checkbox';
+          // Content Manager's modal gives every checkbox a 210px width and
+          // auto margins; keep this selector's boxes beside their labels.
+          input.style.cssText = 'width:14px!important;min-width:14px!important;' +
+            'max-width:14px!important;height:14px!important;flex:0 0 14px!important;' +
+            'margin:0!important;padding:0!important;position:static!important;';
+          input.checked = playerMetadataColumns.indexOf(definition.id) !== -1;
+          input.addEventListener('change', function () {
+            if (input.checked && playerMetadataColumns.indexOf(definition.id) === -1) {
+              playerMetadataColumns.push(definition.id);
+            } else if (!input.checked) {
+              playerMetadataColumns = playerMetadataColumns.filter(function (id) {
+                return id !== definition.id;
+              });
+            }
+            savePlayerMetadataColumns();
+            var save = modal.querySelector('footer button.save');
+            if (save) save.classList.remove('disabled');
+            playerMetadataRevision++;
+            renderPlayerMetadataList();
+          });
+          var name = document.createElement('span');
+          name.textContent = definition.name;
+          name.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+          if (definition.description) label.title = definition.description;
+          label.appendChild(input);
+          label.appendChild(name);
+          choices.appendChild(label);
+        });
+        box.appendChild(choices);
+      }
+      box.addEventListener('click', function (event) { event.stopPropagation(); });
+      box.addEventListener('change', function (event) { event.stopPropagation(); });
+      if (old) old.parentNode.replaceChild(box, old);
+      else content.appendChild(box);
+      return;
+    }
+  }
+
+  // Network Activity can contain thousands of rows. These controls filter the
+  // rows already rendered by Scala; they do not change the server query.
+  var networkActivityWatchedModal = null;
+  var networkActivityObserver = null;
+
+  function watchNetworkActivity(modal) {
+    if (networkActivityWatchedModal === modal) return;
+    if (networkActivityObserver) networkActivityObserver.disconnect();
+    networkActivityWatchedModal = modal;
+    networkActivityObserver = null;
+    if (!modal) return;
+    // Scala replaces the list as activity arrives. The general page sweep
+    // waits 100 ms, long enough to show every row briefly. MutationObserver
+    // runs before the next paint, so keep this dialog's filter in sync there.
+    networkActivityObserver = new MutationObserver(function (records) {
+      for (var i = 0; i < records.length; i++) {
+        var record = records[i];
+        if (record.target.nodeType === 1 &&
+            record.target.closest('[data-streamliner-network-activity-filters]')) continue;
+        var changed = Array.prototype.some.call(record.addedNodes, function (node) {
+          return node.nodeType !== 1 || !node.hasAttribute('data-cm-helper');
+        }) || Array.prototype.some.call(record.removedNodes, function (node) {
+          return node.nodeType !== 1 || !node.hasAttribute('data-cm-helper');
+        });
+        if (changed) {
+          runFeature('networkActivityFilters', applyNetworkActivityFilters);
+          return;
+        }
+      }
+    });
+    networkActivityObserver.observe(modal, { childList: true, subtree: true });
+  }
+
+  function applyNetworkActivityFilters() {
+    var modals = document.querySelectorAll('.modal');
+    var activityModal = null;
+    for (var mi = 0; mi < modals.length; mi++) {
+      var modal = modals[mi];
+      var title = modal.querySelector('.header h4');
+      if (!title || title.closest('.modal') !== modal ||
+          title.textContent.trim() !== 'Network Activity') continue;
+      activityModal = modal;
+      var content = modal.querySelector('section.content');
+      var list = content && content.querySelector('.networkActivity ul.basic.items');
+      var existingControls = modal.querySelector('[data-streamliner-network-activity-filters]');
+      if (!CONFIG.networkActivityFilters) {
+        if (existingControls) existingControls.remove();
+        if (list) networkActivityRows(list).forEach(function (row) { row.style.display = ''; });
+        continue;
+      }
+      if (!list) continue;
+      var header = list.querySelector('li.header.columns');
+      if (!header) continue;
+      var playerIndex = -1;
+      var typeIndex = -1;
+      Array.prototype.forEach.call(header.children, function (cell, index) {
+        var label = cell.textContent.trim().toLowerCase();
+        if (label === 'player') playerIndex = index;
+        if (label === 'message type') typeIndex = index;
+      });
+      if (playerIndex < 0 || typeIndex < 0) continue;
+      var rows = networkActivityRows(list);
+      var controls = modal.querySelector('[data-streamliner-network-activity-filters]');
+      if (!controls) {
+        controls = document.createElement('div');
+        controls.setAttribute('data-cm-helper', 'true');
+        controls.setAttribute('data-streamliner-network-activity-filters', 'true');
+        controls.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;' +
+          'padding:8px 10px;border-bottom:1px solid #bbb;';
+        var playerLabel = document.createElement('label');
+        playerLabel.textContent = 'Player';
+        playerLabel.style.cssText = 'display:flex;align-items:center;gap:5px;';
+        var search = document.createElement('input');
+        search.type = 'search';
+        search.placeholder = 'Search players';
+        search.setAttribute('aria-label', 'Filter Network Activity by player');
+        search.style.cssText = 'width:220px;max-width:40vw;';
+        playerLabel.appendChild(search);
+        controls.appendChild(playerLabel);
+        var typeLabel = document.createElement('label');
+        typeLabel.textContent = 'Message type';
+        typeLabel.style.cssText = 'display:flex;align-items:center;gap:5px;';
+        var select = document.createElement('select');
+        select.setAttribute('aria-label', 'Filter Network Activity by message type');
+        typeLabel.appendChild(select);
+        controls.appendChild(typeLabel);
+        var count = document.createElement('span');
+        count.style.cssText = 'font-size:12px;opacity:.7;';
+        controls.appendChild(count);
+        search.addEventListener('input', applyNetworkActivityFilters);
+        select.addEventListener('change', applyNetworkActivityFilters);
+        content.insertBefore(controls, content.firstChild);
+      }
+      var selectBox = controls.querySelector('select');
+      var currentType = selectBox.value;
+      var types = {};
+      rows.forEach(function (row) {
+        var cell = row.children[typeIndex];
+        if (cell) types[cell.textContent.trim()] = true;
+      });
+      var values = Object.keys(types).sort();
+      var signature = values.join('\u0000');
+      if (selectBox.getAttribute('data-options') !== signature) {
+        selectBox.textContent = '';
+        var all = document.createElement('option');
+        all.value = '';
+        all.textContent = 'All';
+        selectBox.appendChild(all);
+        values.forEach(function (value) {
+          var option = document.createElement('option');
+          option.value = value;
+          option.textContent = value;
+          selectBox.appendChild(option);
+        });
+        selectBox.value = values.indexOf(currentType) !== -1 ? currentType : '';
+        selectBox.setAttribute('data-options', signature);
+      }
+      filterNetworkActivity(controls, rows, playerIndex, typeIndex);
+    }
+    watchNetworkActivity(CONFIG.networkActivityFilters ? activityModal : null);
+  }
+
+  function networkActivityRows(list) {
+    return Array.prototype.filter.call(list.children, function (item) {
+      return item.matches('li.columns:not(.header)');
+    });
+  }
+
+  function filterNetworkActivity(controls, rows, playerIndex, typeIndex) {
+    var terms = controls.querySelector('input').value.toLowerCase().split(/[;,\n]+/).map(function (term) {
+      return term.trim();
+    }).filter(Boolean);
+    var selectedType = controls.querySelector('select').value;
+    var visible = 0;
+    rows.forEach(function (row) {
+      var player = row.children[playerIndex] ? row.children[playerIndex].textContent.toLowerCase() : '';
+      var type = row.children[typeIndex] ? row.children[typeIndex].textContent.trim() : '';
+      var matches = (!terms.length || terms.some(function (term) { return player.indexOf(term) !== -1; })) &&
+        (!selectedType || type === selectedType);
+      row.style.display = matches ? '' : 'none';
+      if (matches) visible++;
+    });
+    controls.querySelector('span').textContent = visible + ' of ' + rows.length + ' rows';
+  }
+
+  function applyPlayerMetadata() {
+    if (!playerListVisible()) return;
+    var pageKey = playerMetadataRows().map(function (row) {
+      return row.getAttribute('data-id');
+    }).join(',');
+    if (pageKey !== playerMetadataPageKey) {
+      playerMetadataPageKey = pageKey;
+      if (playerMetadataRefreshing) {
+        playerMetadataFetchGeneration++;
+        playerMetadataRefreshing = false;
+      }
+      playerMetadataProgress = '';
+      playerMetadataRevision++;
+    }
+    if (playerMetadataColumns.length && !playerMetadataDefinitions) loadPlayerMetadataDefinitions();
+    renderPlayerMetadataList();
+    var titles = document.querySelectorAll('.modal .header h4');
+    var viewSettingsOpen = Array.prototype.some.call(titles, function (title) {
+      return title.textContent.trim() === 'View Settings';
+    });
+    if (viewSettingsOpen) {
+      loadPlayerMetadataDefinitions();
+      renderPlayerMetadataSettings();
+    }
   }
 
   // XMLHttpRequest rather than fetch, to stay with the rest of the file.
@@ -4283,6 +4953,13 @@
       advanced: []
     },
     {
+      title: 'Network Activity Filters',
+      master: 'networkActivityFilters',
+      blurb: 'Adds player-name and message-type filters to Player Problems > Network Activity. ' +
+             'Filters apply to rows currently displayed in the dialog.',
+      advanced: []
+    },
+    {
       title: 'Open Workgroup Root',
       master: 'expandWorkgroupRoot',
       blurb: 'Workgroup trees open with Root expanded, so the first level of ' +
@@ -5085,6 +5762,8 @@
     runFeature('nonScheduledContent', applyNonScheduledContent);
     runFeature('frameList', applyFrameList);
     runFeature('generatePlan', applyGeneratePlan);
+    runFeature('playerMetadata', applyPlayerMetadata);
+    runFeature('networkActivityFilters', applyNetworkActivityFilters);
     runFeature('workgroupRoot', applyWorkgroupRoot);
     runFeature('userMenu', installUserMenuItem);
     runFeature('welcome', welcomeOnce);
@@ -5182,6 +5861,7 @@
 
   function boot() {
     loadConfig();
+    loadPlayerMetadataColumns();
 
     if (CONFIG.scaleJquery) installJqueryPatch();
     if (CONFIG.scaleWebAnimations) patchWebAnimations();
