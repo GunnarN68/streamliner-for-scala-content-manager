@@ -89,9 +89,17 @@ Click **Update metadata** above the player list to fetch values for the current 
 
 Adds player-name and message-type filters to Player Problems > Network Activity. Enter one or more player-name fragments, separated by commas or semicolons, to show matching rows. These filters apply to rows already displayed in the pane. The feature can be turned off in Streamliner Settings.
 
+### Wide Channel Pickers
+
+Player Properties shows wider channel pickers, so a long channel name fits in full. Content Manager makes each one 200px wide. The default here is 400px.
+
 ### Open Workgroup Root
 
 Workgroup trees open with Root expanded, so the first level of workgroups shows without a click. This applies wherever you pick workgroups, and on System > Workgroups.
+
+### Text Selection Fix
+
+Once you click in a channel's schedule, Content Manager stops you selecting text anywhere, and Command-A or Ctrl-A fails even in a search box, until you reload. The schedule blocks selection so a drag in its grid highlights nothing, but it never lifts the block. This lifts it as soon as you let go of the mouse.
 
 ### Maintenance Files Fixes
 

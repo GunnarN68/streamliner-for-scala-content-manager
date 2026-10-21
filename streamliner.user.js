@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Streamliner for Scala Content Manager
 // @namespace    https://github.com/pcherna/streamliner-for-scala-content-manager
-// @version      1.53.0.7
+// @version      1.55.0
 // @description  Conveniences and fixes for Scala Content Manager: dark mode, speedup, text-only menus, search hotkey, host badge, login fix.
 // @match        *://*/ContentManager/*
 // @match        *://*/ContentManager
@@ -127,6 +127,16 @@
     // Adds local row filters to the Network Activity dialog under Player Problems.
     networkActivityFilters: true,
 
+    // Player Properties gives each display's channel picker 200px, which cuts
+    // off all but a short channel name. This widens it.
+    wideChannelPicker: true,
+    channelPickerWidth: '400px',
+
+    // A press in a channel's schedule grid blocks text selection on every page
+    // until a reload, Command-A in a text field included. This lifts the block
+    // when the mouse button comes up.
+    fixTextSelection: true,
+
     // Every workgroup tree opens with Root collapsed. This opens Root once as
     // the tree renders, so its first level shows. Collapsing it again sticks.
     expandWorkgroupRoot: true,
@@ -216,7 +226,7 @@
     } catch (e) { /* private mode */ }
   }
 
-  var VERSION = '1.53.0.7';
+  var VERSION = '1.55.0';
   var TAG = '[streamliner]';
   var POLL_MS = 250;
   var STYLE_ID = 'cm-helper-speed';
@@ -1346,6 +1356,92 @@
   function removeListFilters() {
     if (filtersEl && filtersEl.parentNode) filtersEl.parentNode.removeChild(filtersEl);
     filtersEl = null;
+  }
+
+  // -------------------------------------------------------- channel picker
+
+  // Player Properties has one channel picker per display, up to four, in the
+  // view whose className is playerDisplaySelector. Every version from 11.01 to
+  // 13.60 builds it as a Select2 with width "200px", which Select2 writes
+  // inline on .select2-container. Select2 sizes its dropdown from the
+  // container when it opens, so the list widens with it.
+  //
+  // On 12.00 and later a player licensed for campaigns shows a box of the
+  // app's own in place of the Select2, until it is clicked. light.css fixes
+  // that box at 200px, its inner .comboChannelSelector at 180px and the name
+  // in it at 135px. Each keeps the same distance from the new width.
+  //
+  // `html body` for the same reason as the list filters: the rules must win
+  // wherever this sheet ends up in the document.
+  var CHANNEL_PICKER_CSS = [
+    'html body .playerDisplaySelector .select2-container { width: %W% !important; }',
+    'html body .playerDisplaySelector .campaignChannelSelector { width: %W% !important; }',
+    'html body .playerDisplaySelector .comboChannelSelector { width: calc(%W% - 20px) !important; }',
+    'html body .playerDisplaySelector .comboChannelSelector .name { width: calc(%W% - 65px) !important; }'
+  ].join('\n');
+
+  var channelPickerEl = null;
+
+  function applyChannelPicker() {
+    if (!CONFIG.wideChannelPicker) return;
+    if (channelPickerEl && channelPickerEl.isConnected) return;
+    if (!(document.head || document.documentElement)) return;
+    channelPickerEl = makeStyle('cm-helper-channel-picker');
+    var width = cssValue('channelPickerWidth', 'width');
+    channelPickerEl.textContent = CHANNEL_PICKER_CSS.split('%W%').join(width);
+    log('channel pickers set to ' + width);
+  }
+
+  function removeChannelPicker() {
+    if (channelPickerEl && channelPickerEl.parentNode) channelPickerEl.parentNode.removeChild(channelPickerEl);
+    channelPickerEl = null;
+  }
+
+  // -------------------------------------------------------- text selection
+
+  // The schedule grid (module/schedule/calendar) stops text being highlighted
+  // while you drag in it. Its mousedown on the empty grid and its mousedown on
+  // a timeslot each run
+  //   $(document).on("selectstart", function(){return!1})
+  // and nothing ever takes the handler off, in any version from 11.01 to
+  // 13.60. The app never reloads, so from the first press in any schedule,
+  // every page refuses a drag selection. Chrome's Select All fires selectstart
+  // too, and gives up when it is cancelled, so Command-A fails even in a text
+  // field. Each press adds another copy.
+  //
+  // The block is lifted when the button comes up, which is when the app's drag
+  // ends, so a drag in the grid still highlights nothing. Only a handler of
+  // exactly that shape goes. A delegated one, or one that does anything else,
+  // belongs to something else.
+  var SELECT_BLOCK = /^function\s*\(\s*\)\s*\{\s*return\s*(?:!1|false)\s*;?\s*\}$/;
+
+  function isSelectBlock(handleObj) {
+    return !!handleObj && !handleObj.selector && !handleObj.namespace &&
+      typeof handleObj.handler === 'function' &&
+      SELECT_BLOCK.test(Function.prototype.toString.call(handleObj.handler));
+  }
+
+  function onSelectionMouseUp() {
+    if (!CONFIG.fixTextSelection) return;
+    // The calendar binds through whichever copy the app loaded it with, which
+    // on 11.07 and 13.60 is not the only one on the page.
+    var list = pageJqueries();
+    var removed = 0;
+    for (var i = 0; i < list.length; i++) {
+      var jq = list[i];
+      if (typeof jq._data !== 'function' || typeof jq.fn.off !== 'function') continue;
+      var events = jq._data(document, 'events');
+      var handlers = events && events.selectstart;
+      if (!handlers || !handlers.length) continue;
+      // off() edits the array this reads from, so collect first.
+      var doomed = [];
+      for (var k = 0; k < handlers.length; k++) {
+        if (isSelectBlock(handlers[k])) doomed.push(handlers[k].handler);
+      }
+      for (var d = 0; d < doomed.length; d++) jq(document).off('selectstart', doomed[d]);
+      removed += doomed.length;
+    }
+    if (removed) log('lifted ' + removed + ' text selection block' + (removed === 1 ? '' : 's'));
   }
 
   // --------------------------------------------------------- workgroup root
@@ -4839,6 +4935,7 @@
     fixSignIn: '11.x needs it for the button, 13.50 for Enter.',
     pinnedMenuWidth: 'Wider menus take width from the page content.',
     listFilterHeight: 'How tall a filter list may get before it scrolls.',
+    channelPickerWidth: 'Content Manager\'s own width is 200px.',
     templateUsageConcurrency: 'How many usage counts or names to fetch at once. Higher is faster and leans harder on the server.',
     usageNameCount: 'How many names to list after each count, such as 2 Playlists (A, B). 0 lists none.',
     searchHotkey: 'A key on its own, or with modifiers: "/", "cmd+k", "ctrl+k", "alt+s".',
@@ -4957,6 +5054,21 @@
       master: 'networkActivityFilters',
       blurb: 'Adds player-name and message-type filters to Player Problems > Network Activity. ' +
              'Filters apply to rows currently displayed in the dialog.',
+      advanced: []
+    },
+    {
+      title: 'Wide Channel Pickers',
+      master: 'wideChannelPicker',
+      blurb: 'Player Properties shows wider channel pickers, so a long channel name ' +
+             'fits in full.',
+      advanced: ['channelPickerWidth']
+    },
+    {
+      title: 'Text Selection Fix',
+      master: 'fixTextSelection',
+      blurb: 'Once you click in a channel\'s schedule, Content Manager stops you selecting ' +
+             'text anywhere, and Command-A or Ctrl-A fails even in a search box, until you ' +
+             'reload. This undoes that as soon as you let go of the mouse.',
       advanced: []
     },
     {
@@ -5416,6 +5528,7 @@
     removePinnedMenu();
     // Only a stylesheet, so taking it out is the whole teardown.
     removeListFilters();
+    removeChannelPicker();
     // Torn down only when it is off, unlike the two above. Those rebuild from
     // a stylesheet and cost nothing. This one would re-fetch every count, so
     // saving any setting at all would fire a request per used template. No
@@ -5764,6 +5877,7 @@
     runFeature('generatePlan', applyGeneratePlan);
     runFeature('playerMetadata', applyPlayerMetadata);
     runFeature('networkActivityFilters', applyNetworkActivityFilters);
+    runFeature('channelPicker', applyChannelPicker);
     runFeature('workgroupRoot', applyWorkgroupRoot);
     runFeature('userMenu', installUserMenuItem);
     runFeature('welcome', welcomeOnce);
@@ -5874,6 +5988,9 @@
     document.addEventListener('keydown', onKeyDown, true);
     // Bubble phase, after the app's own menu toggler has run.
     document.addEventListener('click', onDockedMenuClick, false);
+    // On window, so a drag let go outside the page is caught too where the
+    // browser reports it.
+    window.addEventListener('mouseup', onSelectionMouseUp, true);
     // On window, in capture, so it runs before the app's handler on document.
     window.addEventListener('keyup', onSignInEnter, true);
     window.addEventListener('keydown', onSuggestionKeyDown, true);
@@ -5945,6 +6062,7 @@
         applySectionLinks: applySectionLinks,
         onSignInEnter: onSignInEnter,
         suggestionsStale: suggestionsStale,
+        isSelectBlock: isSelectBlock,
         settleOnSelectKey: settleOnSelectKey,
         suggestionKeyDown: suggestionKeyDown,
         highlightFirst: highlightFirst,
