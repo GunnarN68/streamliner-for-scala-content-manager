@@ -79,9 +79,9 @@ Player Properties shows a Generate Plan button when there are no unsaved changes
 
 ### Player Metadata Columns
 
-On the Players page, open **View Settings** to choose individual player metadata fields. The choices are saved for this Content Manager server and take effect immediately. Selected fields appear as columns to the right of the existing columns in the player list. When the columns exceed the available width, a synchronized horizontal scrollbar appears above the list.
+Enable **Player Metadata Columns** in Streamliner Settings. On the Players page, open **View Settings** to choose individual player metadata fields. The choices are saved for this Content Manager server and take effect immediately. Selected fields appear as columns to the right of the existing columns in the player list. When the columns exceed the available width, a synchronized horizontal scrollbar appears above the list.
 
-Use Scala's search field to filter players. Click any data column heading to sort by that field; click it again to reverse the order. The selection checkbox does not sort. Sorting applies only to players loaded on the current page, as indicated above the list.
+Turning the feature off hides the added columns and controls without clearing your chosen fields. Use Scala's search field to filter players. Click any data column heading to sort by that field; click it again to reverse the order. The selection checkbox does not sort. Sorting applies only to players loaded on the current page, as indicated above the list.
 
 Click **Update metadata** above the player list to fetch values for the current page. The update makes one GET request for all loaded players and times out after 30 seconds. Searches and page changes display cached values when available and do not fetch metadata automatically. Use **Update metadata** again when values may have changed. Empty fields display a dash; failed requests are reported beside the button.
 
