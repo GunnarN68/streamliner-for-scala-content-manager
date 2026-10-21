@@ -125,6 +125,9 @@
     // so the plan can be made without going back to the player list.
     playerGeneratePlan: true,
 
+    // Adds local row filters to the Network Activity dialog under Player Problems.
+    networkActivityFilters: true,
+
     // Player Properties gives each display's channel picker 200px, which cuts
     // off all but a short channel name. This widens it.
     wideChannelPicker: true,
@@ -1787,6 +1790,151 @@
       success: function (data) { done(data || {}, null); },
       error: function (xhr) { done(null, xhr); }
     });
+  }
+
+  // Network Activity can contain thousands of rows. These controls filter the
+  // rows already rendered by Scala; they do not change the server query.
+  var networkActivityWatchedModal = null;
+  var networkActivityObserver = null;
+
+  function watchNetworkActivity(modal) {
+    if (networkActivityWatchedModal === modal) return;
+    if (networkActivityObserver) networkActivityObserver.disconnect();
+    networkActivityWatchedModal = modal;
+    networkActivityObserver = null;
+    if (!modal) return;
+    // Scala replaces the list as activity arrives. The general page sweep
+    // waits 100 ms, long enough to show every row briefly. MutationObserver
+    // runs before the next paint, so keep this dialog's filter in sync there.
+    networkActivityObserver = new MutationObserver(function (records) {
+      for (var i = 0; i < records.length; i++) {
+        var record = records[i];
+        if (record.target.nodeType === 1 &&
+            record.target.closest('[data-streamliner-network-activity-filters]')) continue;
+        var changed = Array.prototype.some.call(record.addedNodes, function (node) {
+          return node.nodeType !== 1 || !node.hasAttribute('data-cm-helper');
+        }) || Array.prototype.some.call(record.removedNodes, function (node) {
+          return node.nodeType !== 1 || !node.hasAttribute('data-cm-helper');
+        });
+        if (changed) {
+          runFeature('networkActivityFilters', applyNetworkActivityFilters);
+          return;
+        }
+      }
+    });
+    networkActivityObserver.observe(modal, { childList: true, subtree: true });
+  }
+
+  function applyNetworkActivityFilters() {
+    var modals = document.querySelectorAll('.modal');
+    var activityModal = null;
+    for (var mi = 0; mi < modals.length; mi++) {
+      var modal = modals[mi];
+      var title = modal.querySelector('.header h4');
+      if (!title || title.closest('.modal') !== modal ||
+          title.textContent.trim() !== 'Network Activity') continue;
+      activityModal = modal;
+      var content = modal.querySelector('section.content');
+      var list = content && content.querySelector('.networkActivity ul.basic.items');
+      var existingControls = modal.querySelector('[data-streamliner-network-activity-filters]');
+      if (!CONFIG.networkActivityFilters) {
+        if (existingControls) existingControls.remove();
+        if (list) networkActivityRows(list).forEach(function (row) { row.style.display = ''; });
+        continue;
+      }
+      if (!list) continue;
+      var header = list.querySelector('li.header.columns');
+      if (!header) continue;
+      var playerIndex = -1;
+      var typeIndex = -1;
+      Array.prototype.forEach.call(header.children, function (cell, index) {
+        var label = cell.textContent.trim().toLowerCase();
+        if (label === 'player') playerIndex = index;
+        if (label === 'message type') typeIndex = index;
+      });
+      if (playerIndex < 0 || typeIndex < 0) continue;
+      var rows = networkActivityRows(list);
+      var controls = modal.querySelector('[data-streamliner-network-activity-filters]');
+      if (!controls) {
+        controls = document.createElement('div');
+        controls.setAttribute('data-cm-helper', 'true');
+        controls.setAttribute('data-streamliner-network-activity-filters', 'true');
+        controls.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;' +
+          'padding:8px 10px;border-bottom:1px solid #bbb;';
+        var playerLabel = document.createElement('label');
+        playerLabel.textContent = 'Player';
+        playerLabel.style.cssText = 'display:flex;align-items:center;gap:5px;';
+        var search = document.createElement('input');
+        search.type = 'search';
+        search.placeholder = 'Search players';
+        search.setAttribute('aria-label', 'Filter Network Activity by player');
+        search.style.cssText = 'width:220px;max-width:40vw;';
+        playerLabel.appendChild(search);
+        controls.appendChild(playerLabel);
+        var typeLabel = document.createElement('label');
+        typeLabel.textContent = 'Message type';
+        typeLabel.style.cssText = 'display:flex;align-items:center;gap:5px;';
+        var select = document.createElement('select');
+        select.setAttribute('aria-label', 'Filter Network Activity by message type');
+        typeLabel.appendChild(select);
+        controls.appendChild(typeLabel);
+        var count = document.createElement('span');
+        count.style.cssText = 'font-size:12px;opacity:.7;';
+        controls.appendChild(count);
+        search.addEventListener('input', applyNetworkActivityFilters);
+        select.addEventListener('change', applyNetworkActivityFilters);
+        content.insertBefore(controls, content.firstChild);
+      }
+      var selectBox = controls.querySelector('select');
+      var currentType = selectBox.value;
+      var types = {};
+      rows.forEach(function (row) {
+        var cell = row.children[typeIndex];
+        if (cell) types[cell.textContent.trim()] = true;
+      });
+      var values = Object.keys(types).sort();
+      var signature = values.join('\u0000');
+      if (selectBox.getAttribute('data-options') !== signature) {
+        selectBox.textContent = '';
+        var all = document.createElement('option');
+        all.value = '';
+        all.textContent = 'All';
+        selectBox.appendChild(all);
+        values.forEach(function (value) {
+          var option = document.createElement('option');
+          option.value = value;
+          option.textContent = value;
+          selectBox.appendChild(option);
+        });
+        selectBox.value = values.indexOf(currentType) !== -1 ? currentType : '';
+        selectBox.setAttribute('data-options', signature);
+      }
+      filterNetworkActivity(controls, rows, playerIndex, typeIndex);
+    }
+    watchNetworkActivity(CONFIG.networkActivityFilters ? activityModal : null);
+  }
+
+  function networkActivityRows(list) {
+    return Array.prototype.filter.call(list.children, function (item) {
+      return item.matches('li.columns:not(.header)');
+    });
+  }
+
+  function filterNetworkActivity(controls, rows, playerIndex, typeIndex) {
+    var terms = controls.querySelector('input').value.toLowerCase().split(/[;,\n]+/).map(function (term) {
+      return term.trim();
+    }).filter(Boolean);
+    var selectedType = controls.querySelector('select').value;
+    var visible = 0;
+    rows.forEach(function (row) {
+      var player = row.children[playerIndex] ? row.children[playerIndex].textContent.toLowerCase() : '';
+      var type = row.children[typeIndex] ? row.children[typeIndex].textContent.trim() : '';
+      var matches = (!terms.length || terms.some(function (term) { return player.indexOf(term) !== -1; })) &&
+        (!selectedType || type === selectedType);
+      row.style.display = matches ? '' : 'none';
+      if (matches) visible++;
+    });
+    controls.querySelector('span').textContent = visible + ' of ' + rows.length + ' rows';
   }
 
   // XMLHttpRequest rather than fetch, to stay with the rest of the file.
@@ -4380,6 +4528,13 @@
       advanced: []
     },
     {
+      title: 'Network Activity Filters',
+      master: 'networkActivityFilters',
+      blurb: 'Adds player-name and message-type filters to Player Problems > Network Activity. ' +
+             'Filters apply to rows currently displayed in the dialog.',
+      advanced: []
+    },
+    {
       title: 'Wide Channel Pickers',
       master: 'wideChannelPicker',
       blurb: 'Player Properties shows wider channel pickers, so a long channel name ' +
@@ -5198,6 +5353,7 @@
     runFeature('nonScheduledContent', applyNonScheduledContent);
     runFeature('frameList', applyFrameList);
     runFeature('generatePlan', applyGeneratePlan);
+    runFeature('networkActivityFilters', applyNetworkActivityFilters);
     runFeature('channelPicker', applyChannelPicker);
     runFeature('workgroupRoot', applyWorkgroupRoot);
     runFeature('userMenu', installUserMenuItem);

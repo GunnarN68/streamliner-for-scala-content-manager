@@ -76,6 +76,10 @@ The schedule page lists a channel's frames by name under the frame map, each one
 
 Player Properties shows a Generate Plan button when there are no unsaved changes, so you need not go back to the player list to generate the plan.
 
+### Network Activity Filters
+
+Adds player-name and message-type filters to Player Problems > Network Activity. Enter one or more player-name fragments, separated by commas or semicolons, to show matching rows. These filters apply to rows already displayed in the pane. The feature can be turned off in Streamliner Settings.
+
 ### Wide Channel Pickers
 
 Player Properties shows wider channel pickers, so a long channel name fits in full. Content Manager makes each one 200px wide. The default here is 400px.
