@@ -84,6 +84,10 @@ Player Properties shows wider channel pickers, so a long channel name fits in fu
 
 Workgroup trees open with Root expanded, so the first level of workgroups shows without a click. This applies wherever you pick workgroups, and on System > Workgroups.
 
+### Text Selection Fix
+
+Once you click in a channel's schedule, Content Manager stops you selecting text anywhere, and Command-A or Ctrl-A fails even in a search box, until you reload. The schedule blocks selection so a drag in its grid highlights nothing, but it never lifts the block. This lifts it as soon as you let go of the mouse.
+
 ### Maintenance Files Fixes
 
 Improves the file selection for a maintenance job's Install File task. It lists every file on one page, sorted without regard to case, and drops the warning icon on files in use, since they are already annotated. Upload opens the file chooser straight away, and a new upload is pre-selected as soon as it appears. A task's Type list shows every choice without scrolling. After an upload, the task dialog no longer pulls focus out of the field you are typing in, such as Install path.

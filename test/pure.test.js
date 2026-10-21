@@ -806,3 +806,15 @@ test('label overrides: English defaults stay in English, user overrides apply ev
   const en = withLanguage(load({ storage }), 'en', {}).internals.buildOverrideIndex();
   same(en, { 'maintenance-job': 'Maintenance', 'player-health': 'Probleme' });
 });
+
+test('text selection: only the schedule grid\'s bare "return false" counts as the leaked block', () => {
+  const { isSelectBlock } = load().streamliner._internals;
+  // As 11.x and 12.00 minify it, and as 13.x does.
+  assert.equal(isSelectBlock({ handler: function(){return!1} }), true);
+  assert.equal(isSelectBlock({ handler: function () { return false; } }), true);
+  assert.equal(isSelectBlock({ handler: function(){return!1}, selector: '.panel' }), false, 'delegated');
+  assert.equal(isSelectBlock({ handler: function(){return!1}, namespace: 'ui-disableSelection' }), false, 'namespaced');
+  assert.equal(isSelectBlock({ handler: function(e){e.preventDefault()} }), false, 'does something else');
+  assert.equal(isSelectBlock({ handler: function(){return true} }), false);
+  assert.equal(isSelectBlock(null), false);
+});

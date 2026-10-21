@@ -130,6 +130,11 @@
     wideChannelPicker: true,
     channelPickerWidth: '400px',
 
+    // A press in a channel's schedule grid blocks text selection on every page
+    // until a reload, Command-A in a text field included. This lifts the block
+    // when the mouse button comes up.
+    fixTextSelection: true,
+
     // Every workgroup tree opens with Root collapsed. This opens Root once as
     // the tree renders, so its first level shows. Collapsing it again sticks.
     expandWorkgroupRoot: true,
@@ -1388,6 +1393,53 @@
   function removeChannelPicker() {
     if (channelPickerEl && channelPickerEl.parentNode) channelPickerEl.parentNode.removeChild(channelPickerEl);
     channelPickerEl = null;
+  }
+
+  // -------------------------------------------------------- text selection
+
+  // The schedule grid (module/schedule/calendar) stops text being highlighted
+  // while you drag in it. Its mousedown on the empty grid and its mousedown on
+  // a timeslot each run
+  //   $(document).on("selectstart", function(){return!1})
+  // and nothing ever takes the handler off, in any version from 11.01 to
+  // 13.60. The app never reloads, so from the first press in any schedule,
+  // every page refuses a drag selection. Chrome's Select All fires selectstart
+  // too, and gives up when it is cancelled, so Command-A fails even in a text
+  // field. Each press adds another copy.
+  //
+  // The block is lifted when the button comes up, which is when the app's drag
+  // ends, so a drag in the grid still highlights nothing. Only a handler of
+  // exactly that shape goes. A delegated one, or one that does anything else,
+  // belongs to something else.
+  var SELECT_BLOCK = /^function\s*\(\s*\)\s*\{\s*return\s*(?:!1|false)\s*;?\s*\}$/;
+
+  function isSelectBlock(handleObj) {
+    return !!handleObj && !handleObj.selector && !handleObj.namespace &&
+      typeof handleObj.handler === 'function' &&
+      SELECT_BLOCK.test(Function.prototype.toString.call(handleObj.handler));
+  }
+
+  function onSelectionMouseUp() {
+    if (!CONFIG.fixTextSelection) return;
+    // The calendar binds through whichever copy the app loaded it with, which
+    // on 11.07 and 13.60 is not the only one on the page.
+    var list = pageJqueries();
+    var removed = 0;
+    for (var i = 0; i < list.length; i++) {
+      var jq = list[i];
+      if (typeof jq._data !== 'function' || typeof jq.fn.off !== 'function') continue;
+      var events = jq._data(document, 'events');
+      var handlers = events && events.selectstart;
+      if (!handlers || !handlers.length) continue;
+      // off() edits the array this reads from, so collect first.
+      var doomed = [];
+      for (var k = 0; k < handlers.length; k++) {
+        if (isSelectBlock(handlers[k])) doomed.push(handlers[k].handler);
+      }
+      for (var d = 0; d < doomed.length; d++) jq(document).off('selectstart', doomed[d]);
+      removed += doomed.length;
+    }
+    if (removed) log('lifted ' + removed + ' text selection block' + (removed === 1 ? '' : 's'));
   }
 
   // --------------------------------------------------------- workgroup root
@@ -4335,6 +4387,14 @@
       advanced: ['channelPickerWidth']
     },
     {
+      title: 'Text Selection Fix',
+      master: 'fixTextSelection',
+      blurb: 'Once you click in a channel\'s schedule, Content Manager stops you selecting ' +
+             'text anywhere, and Command-A or Ctrl-A fails even in a search box, until you ' +
+             'reload. This undoes that as soon as you let go of the mouse.',
+      advanced: []
+    },
+    {
       title: 'Open Workgroup Root',
       master: 'expandWorkgroupRoot',
       blurb: 'Workgroup trees open with Root expanded, so the first level of ' +
@@ -5248,6 +5308,9 @@
     document.addEventListener('keydown', onKeyDown, true);
     // Bubble phase, after the app's own menu toggler has run.
     document.addEventListener('click', onDockedMenuClick, false);
+    // On window, so a drag let go outside the page is caught too where the
+    // browser reports it.
+    window.addEventListener('mouseup', onSelectionMouseUp, true);
     // On window, in capture, so it runs before the app's handler on document.
     window.addEventListener('keyup', onSignInEnter, true);
     window.addEventListener('keydown', onSuggestionKeyDown, true);
@@ -5319,6 +5382,7 @@
         applySectionLinks: applySectionLinks,
         onSignInEnter: onSignInEnter,
         suggestionsStale: suggestionsStale,
+        isSelectBlock: isSelectBlock,
         settleOnSelectKey: settleOnSelectKey,
         suggestionKeyDown: suggestionKeyDown,
         highlightFirst: highlightFirst,
