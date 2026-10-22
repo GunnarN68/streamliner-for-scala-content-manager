@@ -125,7 +125,7 @@
     // so the plan can be made without going back to the player list.
     playerGeneratePlan: true,
 
-    // Adds local row filters to the Network Activity dialog under Player Problems.
+    // Adds a compact-menu shortcut and local row filters to Network Activity.
     networkActivityFilters: true,
 
     // Player Properties gives each display's channel picker 200px, which cuts
@@ -920,6 +920,8 @@
     '.cm-helper-menu li a:hover, .cm-helper-menu li a:focus-visible,',
     '.cm-helper-menu .software-downloads a:hover, .cm-helper-menu .software-downloads a:focus-visible {',
     '  background-color: %H% !important; }',
+    '.cm-helper-menu a[data-streamliner-network-activity-link] {',
+    '  pointer-events: auto !important; cursor: pointer !important; }',
     // The compact menus stay open while the feature is on, so the pin and
     // unpin arrows go.
     '.showLeftPinnedMenu, .hideLeftPinnedMenu,',
@@ -1790,6 +1792,116 @@
       success: function (data) { done(data || {}, null); },
       error: function (xhr) { done(null, xhr); }
     });
+  }
+
+  // The compact left menu offers the same Network Activity action as the
+  // Player Problems toolbar. Navigation finishes before the button is clicked.
+  var pendingNetworkActivityOpen = false;
+
+  function networkActivityListVisible() {
+    return /^#playerhealth(?:$|\/\?)/.test(location.hash || '');
+  }
+
+  function openPendingNetworkActivity() {
+    if (!pendingNetworkActivityOpen) return;
+    if (!networkActivityListVisible()) {
+      pendingNetworkActivityOpen = false;
+      return;
+    }
+    var modals = document.querySelectorAll('.modal');
+    for (var i = 0; i < modals.length; i++) {
+      var title = modals[i].querySelector('.header h4');
+      if (title && title.textContent.trim() === 'Network Activity') {
+        pendingNetworkActivityOpen = false;
+        return;
+      }
+    }
+    var button = document.querySelector('.actionPanel button.activity');
+    if (!button) return;
+    pendingNetworkActivityOpen = false;
+    button.click();
+  }
+
+  function requestNetworkActivity() {
+    pendingNetworkActivityOpen = true;
+    if (!networkActivityListVisible()) {
+      location.hash = '#playerhealth';
+      queueSweep();
+      return;
+    }
+    openPendingNetworkActivity();
+  }
+
+  function installNetworkActivityMenu() {
+    var enabled = CONFIG.networkActivityFilters && CONFIG.textOnlyPinnedMenu;
+    var entries = document.querySelectorAll('[data-streamliner-network-activity-menu]');
+    if (!enabled) {
+      pendingNetworkActivityOpen = false;
+      Array.prototype.forEach.call(entries, function (entry) { entry.remove(); });
+      return;
+    }
+    var roots = document.querySelectorAll('.leftPinnedMenu.cm-helper-menu, ' +
+      'header.navbar-sidebar .primary-nav.cm-helper-menu');
+    Array.prototype.forEach.call(roots, function (root) {
+      var source = root.querySelector('section.network a[href="#playerhealth"]') ||
+        root.querySelector('a[href="#playerhealth"]');
+      var sourceItem = source && source.closest('li');
+      var entry = root.querySelector('[data-streamliner-network-activity-menu]');
+      if (!sourceItem || !sourceItem.parentNode) {
+        if (entry) entry.remove();
+        return;
+      }
+      if (!entry) {
+        entry = sourceItem.cloneNode(false);
+        entry.setAttribute('data-cm-helper', 'true');
+        entry.setAttribute('data-streamliner-network-activity-menu', 'true');
+        var link = source.cloneNode(false);
+        link.setAttribute('href', '#playerhealth');
+        link.setAttribute('data-streamliner-network-activity-link', 'true');
+        link.setAttribute('title', 'Network Activity');
+        link.setAttribute('aria-label', 'Network Activity');
+        link.setAttribute('data-cm-full', 'Network Activity');
+        link.setAttribute('tabindex', '0');
+        link.removeAttribute('data-test');
+        link.classList.remove('disabled', 'active');
+        link.classList.add('cm-helper-has-label');
+        var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('viewBox', '0 0 30 21');
+        svg.setAttribute('width', '30');
+        svg.setAttribute('height', '21');
+        svg.setAttribute('aria-hidden', 'true');
+        var wave = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        wave.setAttribute('d', 'M1 11h5l3-7 5 14 3-9 2 2h10');
+        wave.setAttribute('fill', 'none');
+        wave.setAttribute('stroke', 'currentColor');
+        wave.setAttribute('stroke-width', '2');
+        wave.setAttribute('stroke-linecap', 'round');
+        wave.setAttribute('stroke-linejoin', 'round');
+        svg.appendChild(wave);
+        link.appendChild(svg);
+        var label = document.createElement('span');
+        label.className = 'cm-helper-label';
+        label.setAttribute('data-cm-helper', 'true');
+        label.textContent = 'Network Activity';
+        link.appendChild(label);
+        link.addEventListener('click', function (event) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+          requestNetworkActivity();
+        }, true);
+        entry.appendChild(link);
+      }
+      var anchor = entry.querySelector('a');
+      if (anchor) {
+        anchor.classList.remove('disabled');
+        anchor.setAttribute('tabindex', '0');
+      }
+      if (sourceItem.nextSibling !== entry) {
+        sourceItem.parentNode.insertBefore(entry, sourceItem.nextSibling);
+      }
+    });
+    openPendingNetworkActivity();
   }
 
   // Network Activity can contain thousands of rows. These controls filter the
@@ -4528,10 +4640,11 @@
       advanced: []
     },
     {
-      title: 'Network Activity Filters',
+      title: 'Network Activity Shortcut and Filters',
       master: 'networkActivityFilters',
-      blurb: 'Adds player-name and message-type filters to Player Problems > Network Activity. ' +
-             'Filters apply to rows currently displayed in the dialog.',
+      blurb: 'Adds Network Activity directly below Player Problems in the compact left menu, ' +
+             'and player-name and message-type filters to the dialog. Filters apply to ' +
+             'rows currently displayed.',
       advanced: []
     },
     {
@@ -5343,6 +5456,7 @@
     runFeature('sheetOrder', keepHelperSheetsLast);
     if (CONFIG.scaleCss) runFeature('scaleCss', applyCssScaling);
     runFeature('pinnedMenu', applyPinnedMenu);
+    runFeature('networkActivityMenu', installNetworkActivityMenu);
     runFeature('sectionLinks', applySectionLinks);
     runFeature('listFilters', applyListFilters);
     runFeature('searchSuggestions', applySearchSuggestions);

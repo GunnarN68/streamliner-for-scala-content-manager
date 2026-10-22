@@ -76,9 +76,9 @@ The schedule page lists a channel's frames by name under the frame map, each one
 
 Player Properties shows a Generate Plan button when there are no unsaved changes, so you need not go back to the player list to generate the plan.
 
-### Network Activity Filters
+### Network Activity Shortcut and Filters
 
-Adds player-name and message-type filters to Player Problems > Network Activity. Enter one or more player-name fragments, separated by commas or semicolons, to show matching rows. These filters apply to rows already displayed in the pane. The feature can be turned off in Streamliner Settings.
+Adds **Network Activity** directly below **Player Problems** in Streamliner's compact left menu. The shortcut opens the same dialog as the button on the Player Problems page. The dialog also gains player-name and message-type filters. Enter one or more player-name fragments, separated by commas or semicolons, to show matching rows. Filters apply to rows already displayed in the pane. One option in Streamliner Settings turns the shortcut and filters on or off together; the shortcut appears when the compact left menu is enabled.
 
 ### Wide Channel Pickers
 
