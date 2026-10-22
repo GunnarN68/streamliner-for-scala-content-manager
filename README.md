@@ -85,9 +85,9 @@ Turning the feature off hides the added columns and controls without clearing yo
 
 Click **Update metadata** above the player list to fetch values for the current page. The update makes one GET request for all loaded players and times out after 30 seconds. Searches and page changes display cached values when available and do not fetch metadata automatically. Use **Update metadata** again when values may have changed. Empty fields display a dash; failed requests are reported beside the button.
 
-### Network Activity Filters
+### Network Activity Shortcut and Filters
 
-Adds player-name and message-type filters to Player Problems > Network Activity. Enter one or more player-name fragments, separated by commas or semicolons, to show matching rows. These filters apply to rows already displayed in the pane. The feature can be turned off in Streamliner Settings.
+Adds **Network Activity** directly below **Player Problems** in Streamliner's compact left menu. The shortcut opens the same dialog as the button on the Player Problems page. The dialog also gains player-name and message-type filters. Enter one or more player-name fragments, separated by commas or semicolons, to show matching rows. Filters apply to rows already displayed in the pane. One option in Streamliner Settings turns the shortcut and filters on or off together; the shortcut appears when the compact left menu is enabled.
 
 ### Wide Channel Pickers
 
