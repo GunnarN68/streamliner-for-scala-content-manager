@@ -10,6 +10,7 @@ Streamliner does not modify the Content Manager server or any of its data. Excep
 * Maintenance Files Fixes
 * Search Suggestions
 * Player Metadata Columns
+* Advanced Player Search
 
 To configure Streamliner, click your username in the upper-right, and select the **Streamliner Settings** entry that is added to that drop-down. In languages other than English, the entry is called **Streamliner**. The first time you sign in to each Content Manager server, Streamliner's settings open automatically.
 
@@ -84,6 +85,10 @@ Enable **Player Metadata Columns** in Streamliner Settings. On the Players page,
 Turning the feature off hides the added columns and controls without clearing your chosen fields. Use Scala's search field to filter players. Click any data column heading to sort by that field; click it again to reverse the order. The selection checkbox does not sort. Sorting applies only to players loaded on the current page, as indicated above the list.
 
 Click **Update metadata** above the player list to fetch values for the current page. The update makes one GET request for all loaded players and times out after 30 seconds. Searches and page changes display cached values when available and do not fetch metadata automatically. Use **Update metadata** again when values may have changed. Empty fields display a dash; failed requests are reported beside the button.
+
+### Advanced Player Search
+
+On the Players page, enter different player-name search criteria separated by semicolons, for example `BE0406*;CH502*`. Streamliner searches all players for each criterion, combines the matches into the normal Players list, and removes duplicate players. You can then select the resulting group and use the filled or empty star beside Fav. to add it to or remove it from Favorites. The normal player filters and pagination remain in effect. In a player-name pattern, `*` matches any number of characters and `?` matches one character. For example, `Oslo*` matches names beginning with “Oslo”, `*Oslo*` matches names containing “Oslo”, and `AB?12` matches one character in the third position. Wildcard matching is case-insensitive. Wildcard alternatives are matched locally against player names across all result pages; ordinary alternatives continue to use Scala's search. Wildcards apply only to player names, not metadata.
 
 ### Network Activity Shortcut and Filters
 

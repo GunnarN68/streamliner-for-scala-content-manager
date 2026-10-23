@@ -1802,6 +1802,234 @@
     });
   }
 
+  // Scala treats the whole search input as one phrase. On the Players page,
+  // a semicolon means that any of the entered alternatives may match. Terms
+  // containing * or ? are matched locally against all player names; ordinary
+  // terms still use Scala's search. Merge by id and return one regular response
+  // so Scala's own list and paging render the results.
+  var advancedPlayerSearchPatchedJqueries = [];
+  var ADVANCED_PLAYER_SEARCH_BATCH = 250;
+
+  function parsePlayerSearchTerms(raw) {
+    var seen = {};
+    return String(raw || '').split(';').map(function (term) {
+      return term.trim();
+    }).filter(function (term) {
+      if (!term || seen['$' + term]) return false;
+      seen['$' + term] = true;
+      return true;
+    });
+  }
+
+  function playerNameGlobRegex(pattern) {
+    var escaped = String(pattern || '').split('').map(function (character) {
+      if (character === '*') return '.*';
+      if (character === '?') return '.';
+      return character.replace(/[\\^$+?.()|{}\[\]]/g, '\\$&');
+    }).join('');
+    return new RegExp('^' + escaped + '$', 'i');
+  }
+
+  function playerNameMatchesAnyGlob(player, patterns) {
+    var name = String(player && player.name || '');
+    return patterns.some(function (pattern) {
+      return pattern.test(name);
+    });
+  }
+
+  function applyAdvancedPlayerSearch() {
+    var jq = appJquery();
+    if (!jq || typeof jq.ajaxTransport !== 'function' ||
+        advancedPlayerSearchPatchedJqueries.indexOf(jq) !== -1) return;
+    jq.ajaxTransport('+json', function (options) {
+      var parsed;
+      try { parsed = new URL(options.url, location.href); }
+      catch (e) { return; }
+      if (!playerListVisible() || openDialog() ||
+          !/\/api\/rest\/players\/search\/?$/.test(parsed.pathname)) return;
+      var raw = new URLSearchParams(parsed.search).get('search') || '';
+      if (raw.indexOf(';') === -1 && !/[*?]/.test(raw)) return;
+      var terms = parsePlayerSearchTerms(raw);
+      if (!terms.length) terms = [''];
+      return advancedPlayerSearchTransport(jq, parsed, terms);
+    });
+    advancedPlayerSearchPatchedJqueries.push(jq);
+    log('advanced player search: patched');
+  }
+
+  function advancedPlayerSearchTransport(jq, requestUrl, terms) {
+    var requests = [];
+    var stopped = false;
+    var completed = false;
+    var query = new URLSearchParams(requestUrl.search);
+    var resultOffset = Math.max(0, Number(query.get('offset')) || 0);
+    var resultLimit = Math.max(1, Number(query.get('limit')) || ADVANCED_PLAYER_SEARCH_BATCH);
+    var allPlayers = [];
+    var seen = {};
+    var firstResponse = null;
+    var completedTerms = 0;
+    var finish;
+    var globTerms = terms.filter(function (term) { return /[*?]/.test(term); });
+    var globPatterns = globTerms.map(playerNameGlobRegex);
+    var scalaTerms = terms.filter(function (term) { return !/[*?]/.test(term); });
+    var taskCount = scalaTerms.length + (globTerms.length ? 1 : 0);
+
+    function addPage(data) {
+      if (!data || !Array.isArray(data.list)) return false;
+      if (!firstResponse) firstResponse = data;
+      var added = false;
+      data.list.forEach(function (player) {
+        if (!player || player.id === undefined || player.id === null) return;
+        var key = '$' + String(player.id);
+        if (seen[key]) return;
+        seen[key] = true;
+        allPlayers.push(player);
+        added = true;
+      });
+      return added;
+    }
+
+    function fail() {
+      if (stopped || completed) return;
+      completed = true;
+      requests.forEach(function (xhr) { if (xhr && xhr.abort) xhr.abort(); });
+      finish(502, 'error', { text: '{"error":"Advanced player search failed"}' },
+        'Content-Type: application/json\r\n');
+    }
+
+    function fetchTerm(term) {
+      var offset = 0;
+      var termSeen = {};
+      function fetchPage() {
+        if (stopped || completed) return;
+        var params = new URLSearchParams(query.toString());
+        params.set('offset', String(offset));
+        params.set('limit', String(ADVANCED_PLAYER_SEARCH_BATCH));
+        params.set('search', term);
+        var url = new URL(requestUrl.href);
+        url.search = params.toString();
+        var xhr = jq.ajax({
+          type: 'GET', url: url.href, dataType: 'json',
+          timeout: 30000,
+          success: function (data) {
+            if (stopped || completed) return;
+            if (!data || !Array.isArray(data.list)) { fail(); return; }
+            var termAdded = false;
+            data.list.forEach(function (player) {
+              if (!player || player.id === undefined || player.id === null) return;
+              var key = '$' + String(player.id);
+              if (termSeen[key]) return;
+              termSeen[key] = true;
+              termAdded = true;
+            });
+            addPage(data);
+            if (data.list.length && !termAdded) { fail(); return; }
+            var total = Number(data.count);
+            var hasMore = data.list.length === ADVANCED_PLAYER_SEARCH_BATCH &&
+              (!isFinite(total) || offset + data.list.length < total);
+            if (hasMore) {
+              offset += data.list.length;
+              fetchPage();
+              return;
+            }
+            completedTerms++;
+            if (completedTerms === taskCount) finishResults();
+          },
+          error: function (_xhr, status) {
+            if (status !== 'abort') fail();
+          }
+        });
+        requests.push(xhr);
+      }
+      fetchPage();
+    }
+
+    function fetchAllPlayersForGlobs() {
+      var offset = 0;
+      var allSeen = {};
+      function fetchPage() {
+        if (stopped || completed) return;
+        var params = new URLSearchParams(query.toString());
+        params.set('offset', String(offset));
+        params.set('limit', String(ADVANCED_PLAYER_SEARCH_BATCH));
+        params.set('search', '');
+        var url = new URL(requestUrl.href);
+        url.search = params.toString();
+        var xhr = jq.ajax({
+          type: 'GET', url: url.href, dataType: 'json', timeout: 30000,
+          success: function (data) {
+            if (stopped || completed) return;
+            if (!data || !Array.isArray(data.list)) { fail(); return; }
+            if (!firstResponse) firstResponse = data;
+            var added = 0;
+            data.list.forEach(function (player) {
+              if (!player || player.id === undefined || player.id === null) return;
+              var key = '$' + String(player.id);
+              if (allSeen[key]) return;
+              allSeen[key] = true;
+              added++;
+              if (playerNameMatchesAnyGlob(player, globPatterns)) {
+                addPage({ list: [player] });
+              }
+            });
+            if (data.list.length && !added) { fail(); return; }
+            var total = Number(data.count);
+            var hasMore = data.list.length === ADVANCED_PLAYER_SEARCH_BATCH &&
+              (!isFinite(total) || offset + data.list.length < total);
+            if (hasMore) {
+              offset += data.list.length;
+              fetchPage();
+              return;
+            }
+            completedTerms++;
+            if (completedTerms === taskCount) finishResults();
+          },
+          error: function (_xhr, status) {
+            if (status !== 'abort') fail();
+          }
+        });
+        requests.push(xhr);
+      }
+      fetchPage();
+    }
+
+    function finishResults() {
+      if (stopped || completed) return;
+      // Each server request returns its own name-sorted pages. Sorting the
+      // combined set keeps Scala's ordinary player list consistently ordered.
+      allPlayers.sort(function (a, b) {
+        return String(a.name || '').localeCompare(String(b.name || ''), undefined,
+          { numeric: true, sensitivity: 'base' }) ||
+          String(a.id).localeCompare(String(b.id), undefined, { numeric: true });
+      });
+      var response = {};
+      if (firstResponse) {
+        Object.keys(firstResponse).forEach(function (key) { response[key] = firstResponse[key]; });
+      }
+      // Scala's player list reads resultCount (not count) for its tally and
+      // pagination. Keep count as an alias for responses that use that field.
+      response.resultCount = allPlayers.length;
+      response.count = allPlayers.length;
+      response.offset = resultOffset;
+      response.list = allPlayers.slice(resultOffset, resultOffset + resultLimit);
+      completed = true;
+      finish(200, 'success', { text: JSON.stringify(response) },
+        'Content-Type: application/json\r\n');
+    }
+
+    return {
+      send: function (_headers, completeCallback) {
+        finish = completeCallback;
+        scalaTerms.forEach(fetchTerm);
+        if (globTerms.length) fetchAllPlayersForGlobs();
+      },
+      abort: function () {
+        stopped = true;
+        requests.forEach(function (xhr) { if (xhr && xhr.abort) xhr.abort(); });
+      }
+    };
+  }
+
   // ---------------------------------------------------- player metadata columns
 
   // Metadata definitions are network-wide, but values belong to a player.
@@ -2170,6 +2398,63 @@
     });
   }
 
+  function playerSelectedIds() {
+    var match = (location.hash || '').match(/^#player\/\?\*?(.*)$/);
+    var query = new URLSearchParams(match ? match[1] : '');
+    try {
+      var ids = JSON.parse(query.get('selectedIds') || '[]');
+      return Array.isArray(ids) ? ids.map(String) : [];
+    } catch (_e) { return []; }
+  }
+
+  function selectedVisiblePlayerRows(list) {
+    var selected = {};
+    playerSelectedIds().forEach(function (id) { selected['$' + id] = true; });
+    return Array.prototype.filter.call(list.querySelectorAll('li.item'), function (row) {
+      return selected['$' + String(row.getAttribute('data-id') || row.id)];
+    });
+  }
+
+  function playerIsFavorite(icon) {
+    return !!icon && /favorite_on\.svg(?:[?#]|$)/i.test(icon.getAttribute('src') || '');
+  }
+
+  function refreshPlayerFavoriteActions(list) {
+    var rows = selectedVisiblePlayerRows(list);
+    Array.prototype.forEach.call(list.querySelectorAll('[data-streamliner-favorite-action]'),
+      function (button) {
+        var shouldFavorite = button.getAttribute('data-streamliner-favorite-action') === 'add';
+        var hasWork = rows.some(function (row) {
+          var icon = row.querySelector('.favoriteColumn img');
+          return icon && playerIsFavorite(icon) !== shouldFavorite;
+        });
+        button.disabled = !hasWork;
+        button.style.opacity = button.disabled ? '.45' : '1';
+      });
+  }
+
+  function setSelectedPlayersFavorite(list, button, shouldFavorite) {
+    var rows = selectedVisiblePlayerRows(list);
+    var pending = rows.map(function (row) {
+      var icon = row.querySelector('.favoriteColumn img');
+      return icon && playerIsFavorite(icon) !== shouldFavorite ? icon : null;
+    }).filter(Boolean);
+    if (!pending.length) return;
+    Array.prototype.forEach.call(list.querySelectorAll('[data-streamliner-favorite-action]'),
+      function (action) { action.disabled = true; });
+    var next = 0;
+    function updateNext() {
+      if (next >= pending.length) {
+        refreshPlayerFavoriteActions(list);
+        return;
+      }
+      var icon = pending[next++];
+      if (icon.isConnected && playerIsFavorite(icon) !== shouldFavorite) icon.click();
+      window.setTimeout(updateNext, 100);
+    }
+    updateNext();
+  }
+
   function bindPlayerListSort(list) {
     var header = list.querySelector('li.header.columns');
     if (!header) return;
@@ -2177,11 +2462,46 @@
       if (cell.hasAttribute('data-cm-helper') && !cell.hasAttribute('data-streamliner-metadata-column')) return;
       // The first column selects rows. Never attach sorting to it.
       if (index === 0 || cell.querySelector('input[type="checkbox"]')) return;
+      var headerText = (cell.textContent || '').replace(/[▲▼]/g, '').trim();
+      if (/^Fav\.?(?:[★☆]{0,2})$/i.test(headerText)) {
+        cell.style.cursor = '';
+        cell.removeAttribute('title');
+        cell.removeAttribute('aria-sort');
+        var oldArrow = cell.querySelector('[data-streamliner-sort-arrow]');
+        if (oldArrow) oldArrow.remove();
+        var favoriteActions = [
+          { key: 'add', icon: '★', title: 'Add selected to favorites', favorite: true },
+          { key: 'remove', icon: '☆', title: 'Remove selected from favorites', favorite: false }
+        ];
+        favoriteActions.forEach(function (action) {
+          var favoriteButton = cell.querySelector(
+            '[data-streamliner-favorite-action="' + action.key + '"]');
+          if (!favoriteButton) {
+            favoriteButton = document.createElement('button');
+            favoriteButton.type = 'button';
+            favoriteButton.textContent = action.icon;
+            favoriteButton.title = action.title;
+            favoriteButton.setAttribute('aria-label', action.title);
+            favoriteButton.setAttribute('data-cm-helper', 'true');
+            favoriteButton.setAttribute('data-streamliner-favorite-action', action.key);
+            favoriteButton.style.cssText = 'border:0;background:transparent;padding:0 2px;' +
+              'font-size:14px;line-height:1;cursor:pointer;color:#666;vertical-align:baseline;';
+            favoriteButton.addEventListener('click', function (event) {
+              event.preventDefault();
+              event.stopPropagation();
+              setSelectedPlayersFavorite(list, favoriteButton, action.favorite);
+            });
+            cell.appendChild(favoriteButton);
+          }
+        });
+        refreshPlayerFavoriteActions(list);
+        return;
+      }
+      if (!CONFIG.playerMetadataColumnsEnabled) return;
       cell.style.cursor = 'pointer';
       cell.title = 'Click to sort; click again to reverse';
       // Scala already draws and updates its own sort triangle for Name. Keep
       // that native marker instead of adding a duplicate on the other side.
-      var headerText = (cell.textContent || '').replace(/[▲▼]/g, '').trim();
       var isNativeName = !cell.hasAttribute('data-streamliner-metadata-column') &&
         /^Name$/i.test(headerText);
       if (!isNativeName && !cell.querySelector('[data-streamliner-sort-arrow]')) {
@@ -2208,7 +2528,6 @@
       }
     });
   }
-
   function renderPlayerMetadataScroller(list) {
     var scroller = list.parentNode.querySelector('[data-streamliner-metadata-scroller]');
     if (!scroller) {
@@ -2518,6 +2837,7 @@
   function renderPlayerMetadataList() {
     var list = document.querySelector('ul.basic');
     if (!list || !list.parentNode) return;
+    bindPlayerListSort(list);
     var old = list.parentNode.querySelector('[data-streamliner-player-metadata]');
     if (old) old.parentNode.removeChild(old);
     var columns = CONFIG.playerMetadataColumnsEnabled ? selectedPlayerMetadata() : [];
@@ -6798,6 +7118,7 @@
     runFeature('nonScheduledContent', applyNonScheduledContent);
     runFeature('frameList', applyFrameList);
     runFeature('generatePlan', applyGeneratePlan);
+    runFeature('advancedPlayerSearch', applyAdvancedPlayerSearch);
     runFeature('playerMetadata', applyPlayerMetadata);
     runFeature('networkActivityFilters', applyNetworkActivityFilters);
     runFeature('extendedUserActivity', applyExtendedUserActivity);
