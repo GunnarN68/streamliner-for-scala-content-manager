@@ -78,7 +78,13 @@ Player Properties shows a Generate Plan button when there are no unsaved changes
 
 ### Network Activity Shortcut and Filters
 
-Adds **Network Activity** directly below **Player Problems** in Streamliner's compact left menu. The shortcut opens the same dialog as the button on the Player Problems page. The dialog also gains player-name and message-type filters. Enter one or more player-name fragments, separated by commas or semicolons, to show matching rows. Filters apply to rows already displayed in the pane. One option in Streamliner Settings turns the shortcut and filters on or off together; the shortcut appears when the compact left menu is enabled.
+Adds **Network Activity** directly below **Player Problems** in Streamliner's compact left menu. The shortcut opens the same dialog as the button on the Player Problems page. The dialog also gains player-name and message-type filters. Enter one or more player-name fragments, separated by commas or semicolons, to show matching rows. Matching events load as you scroll, and **Export CSV** exports every event matching the current filter, including those not yet scrolled into view.
+
+The **Store** choice is available in the dialog and in Streamliner Settings, and is remembered per server. **Store all data** (the default) keeps every event seen while the dialog is open, so you can change filters later. On busy servers, a long session can use substantial browser memory. **Store only filtered data** keeps events matching the active player and message-type filters. With no filter, it saves no events; changing or clearing a filter discards saved events that no longer match. Closing the dialog or reloading the page clears the saved events. The shortcut and filters share one on/off switch in Streamliner Settings; the shortcut appears when the compact left menu is enabled.
+
+### Extended UserActivity
+
+Adds an **Item** or **Items** detail below each User Activity reference when Scala returns an identifiable item or item list. Count-only references say that item names were not returned. If Scala shortens a list, the detail shows the names it did return and how many more were not included in the response. The feature does not make extra requests.
 
 ### Wide Channel Pickers
 
