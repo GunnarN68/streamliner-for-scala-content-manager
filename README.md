@@ -3,6 +3,8 @@
 Streamliner provides various conveniences and fixes for Scala Content Manager, packaged as a Chrome extension (for Chrome, Edge, Chromium, and related browsers) and as a userscript (for Safari, Firefox, etc.). Both run the same
 `streamliner.user.js`.
 
+This repository is an internal fork of [Peter Cherna's Streamliner for Scala Content Manager](https://github.com/pcherna/streamliner-for-scala-content-manager). It contains internal changes and additions for our use. Peter's repository is the authoritative repository for Streamliner and its canonical releases; changes in this fork are separate unless contributed upstream.
+
 Streamliner does not modify the Content Manager server or any of its data. Except as noted here, Streamliner's features change only what the browser renders, and never contact the server at all. The following features do read from Content Manager using the same API the page itself uses, and they send GET requests only:
 
 * Template Usage
