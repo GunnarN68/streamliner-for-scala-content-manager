@@ -126,6 +126,12 @@
     playerGeneratePlan: true,
     // Adds a compact-menu shortcut and local row filters to Network Activity.
     networkActivityFilters: true,
+    // Keep every event so filters can be changed later, or only events matching
+    // the active filter to reduce memory use on busy servers.
+    networkActivityStorageMode: 'all',
+    // Pulls item names out of the User Activity reference and calls out when
+    // Scala returned only a count or a shortened list.
+    extendedUserActivity: true,
 
     // Enables the added columns and local sorting on the Players page.
     playerMetadataColumnsEnabled: true,
@@ -2824,16 +2830,20 @@
     openPendingNetworkActivity();
   }
 
-  // Network Activity can contain thousands of rows. These controls filter the
-  // rows already rendered by Scala; they do not change the server query.
+  // Scala keeps only a small window of Network Activity rows. Retain each row
+  // seen while the dialog is open so filtering can include older events.
   var networkActivityWatchedModal = null;
   var networkActivityObserver = null;
+  var networkActivityArchive = null;
 
   function watchNetworkActivity(modal) {
     if (networkActivityWatchedModal === modal) return;
     if (networkActivityObserver) networkActivityObserver.disconnect();
     networkActivityWatchedModal = modal;
     networkActivityObserver = null;
+    networkActivityArchive = modal ? {
+      entries: [], byId: Object.create(null), sequence: 0, visibleCount: 100, rendered: ''
+    } : null;
     if (!modal) return;
     // Scala replaces the list as activity arrives. The general page sweep
     // waits 100 ms, long enough to show every row briefly. MutationObserver
@@ -2842,7 +2852,8 @@
       for (var i = 0; i < records.length; i++) {
         var record = records[i];
         if (record.target.nodeType === 1 &&
-            record.target.closest('[data-streamliner-network-activity-filters]')) continue;
+            record.target.closest('[data-streamliner-network-activity-filters], ' +
+              '[data-streamliner-network-activity-archive]')) continue;
         var changed = Array.prototype.some.call(record.addedNodes, function (node) {
           return node.nodeType !== 1 || !node.hasAttribute('data-cm-helper');
         }) || Array.prototype.some.call(record.removedNodes, function (node) {
@@ -2867,11 +2878,15 @@
           title.textContent.trim() !== 'Network Activity') continue;
       activityModal = modal;
       var content = modal.querySelector('section.content');
-      var list = content && content.querySelector('.networkActivity ul.basic.items');
+      var list = content && content.querySelector(
+        '.networkActivity ul.basic.items:not([data-streamliner-network-activity-results])');
       var existingControls = modal.querySelector('[data-streamliner-network-activity-filters]');
       if (!CONFIG.networkActivityFilters) {
+        modal.removeAttribute('data-streamliner-network-activity-filtering');
         if (existingControls) existingControls.remove();
-        if (list) networkActivityRows(list).forEach(function (row) { row.style.display = ''; });
+        var existingArchive = modal.querySelector('[data-streamliner-network-activity-archive]');
+        if (existingArchive) existingArchive.remove();
+        if (list) list.style.display = '';
         continue;
       }
       if (!list) continue;
@@ -2879,13 +2894,20 @@
       if (!header) continue;
       var playerIndex = -1;
       var typeIndex = -1;
+      var timeIndex = -1;
+      var messageIndex = -1;
       Array.prototype.forEach.call(header.children, function (cell, index) {
         var label = cell.textContent.trim().toLowerCase();
         if (label === 'player') playerIndex = index;
         if (label === 'message type') typeIndex = index;
+        if (label === 'time') timeIndex = index;
+        if (label === 'message') messageIndex = index;
       });
       if (playerIndex < 0 || typeIndex < 0) continue;
       var rows = networkActivityRows(list);
+      // The initial capture includes Scala's current window. Subsequent
+      // captures run before paint when Scala replaces that window.
+      watchNetworkActivity(modal);
       var controls = modal.querySelector('[data-streamliner-network-activity-filters]');
       if (!controls) {
         controls = document.createElement('div');
@@ -2908,22 +2930,88 @@
         typeLabel.style.cssText = 'display:flex;align-items:center;gap:5px;';
         var select = document.createElement('select');
         select.setAttribute('aria-label', 'Filter Network Activity by message type');
+        select.setAttribute('data-streamliner-network-activity-type', 'true');
         typeLabel.appendChild(select);
         controls.appendChild(typeLabel);
+        var storageLabel = document.createElement('label');
+        storageLabel.textContent = 'Store';
+        storageLabel.style.cssText = 'display:flex;align-items:center;gap:5px;';
+        var storageSelect = document.createElement('select');
+        storageSelect.setAttribute('data-streamliner-network-activity-storage', 'true');
+        [['all', 'Store all data'], ['filtered', 'Store only filtered data']].forEach(function (choice) {
+          var option = document.createElement('option');
+          option.value = choice[0];
+          option.textContent = choice[1];
+          storageSelect.appendChild(option);
+        });
+        storageLabel.appendChild(storageSelect);
+        controls.appendChild(storageLabel);
+        var storageNote = document.createElement('span');
+        storageNote.setAttribute('data-streamliner-network-activity-storage-note', 'true');
+        storageNote.style.cssText = 'font-size:12px;max-width:360px;';
+        controls.appendChild(storageNote);
         var count = document.createElement('span');
+        count.setAttribute('data-streamliner-network-activity-count', 'true');
         count.style.cssText = 'font-size:12px;opacity:.7;';
         controls.appendChild(count);
-        search.addEventListener('input', applyNetworkActivityFilters);
-        select.addEventListener('change', applyNetworkActivityFilters);
+        var exportButton = document.createElement('button');
+        exportButton.type = 'button';
+        exportButton.textContent = 'Export CSV';
+        exportButton.setAttribute('data-streamliner-network-activity-export', 'true');
+        exportButton.setAttribute('aria-label', 'Export filtered Network Activity as CSV');
+        exportButton.addEventListener('click', function () {
+          exportNetworkActivity(controls);
+        });
+        controls.appendChild(exportButton);
+        search.addEventListener('input', function () {
+          networkActivityArchive.visibleCount = 100;
+          content.scrollTop = 0;
+          applyNetworkActivityFilters();
+        });
+        select.addEventListener('change', function () {
+          networkActivityArchive.visibleCount = 100;
+          content.scrollTop = 0;
+          applyNetworkActivityFilters();
+        });
+        storageSelect.addEventListener('change', function () {
+          CONFIG.networkActivityStorageMode = storageSelect.value;
+          saveConfig();
+          networkActivityArchive.visibleCount = 100;
+          content.scrollTop = 0;
+          applyNetworkActivityFilters();
+        });
+        content.addEventListener('scroll', function () {
+          if (!networkActivityArchive || !networkActivityArchive.filtering || !controls.isConnected ||
+              content.scrollTop + content.clientHeight < content.scrollHeight - 240 ||
+              networkActivityArchive.visibleCount >= networkActivityArchive.matchCount) return;
+          networkActivityArchive.visibleCount += 100;
+          applyNetworkActivityFilters();
+        }, { passive: true });
         content.insertBefore(controls, content.firstChild);
       }
-      var selectBox = controls.querySelector('select');
+      var modeSelect = controls.querySelector('[data-streamliner-network-activity-storage]');
+      var storageMode = CONFIG.networkActivityStorageMode === 'filtered' ? 'filtered' : 'all';
+      modeSelect.value = storageMode;
+      var storageNote = controls.querySelector('[data-streamliner-network-activity-storage-note]');
+      storageNote.textContent = storageMode === 'all' ?
+        '⚠ All events are kept; busy servers can use substantial browser memory.' :
+        'Only matching events are kept; changing filters discards unmatched history.';
+      storageNote.style.color = storageMode === 'all' ? '#a35400' : '';
+      var criteria = networkActivityFilterCriteria(controls);
+      if (storageMode === 'filtered') pruneNetworkActivityArchive(criteria);
+      captureNetworkActivityRows(rows, playerIndex, typeIndex, timeIndex, messageIndex,
+        storageMode, criteria);
+      var selectBox = controls.querySelector('[data-streamliner-network-activity-type]');
       var currentType = selectBox.value;
       var types = {};
+      networkActivityArchive.entries.forEach(function (entry) {
+        if (entry.type) types[entry.type] = true;
+      });
       rows.forEach(function (row) {
         var cell = row.children[typeIndex];
         if (cell) types[cell.textContent.trim()] = true;
       });
+      if (currentType) types[currentType] = true;
       var values = Object.keys(types).sort();
       var signature = values.join('\u0000');
       if (selectBox.getAttribute('data-options') !== signature) {
@@ -2941,7 +3029,7 @@
         selectBox.value = values.indexOf(currentType) !== -1 ? currentType : '';
         selectBox.setAttribute('data-options', signature);
       }
-      filterNetworkActivity(controls, rows, playerIndex, typeIndex);
+      filterNetworkActivity(controls, list, header, rows);
     }
     watchNetworkActivity(CONFIG.networkActivityFilters ? activityModal : null);
   }
@@ -2952,21 +3040,278 @@
     });
   }
 
-  function filterNetworkActivity(controls, rows, playerIndex, typeIndex) {
+  function networkActivityEventTime(label) {
+    if (/^just now$/i.test(label)) return Date.now();
+    if (!/\bago\b/i.test(label)) return null;
+    var units = { second: 1000, minute: 60000, hour: 3600000, day: 86400000 };
+    var age = 0;
+    label.replace(/(\d+|one|a|an)\s+(seconds?|minutes?|hours?|days?)/gi, function (_, amount, unit) {
+      age += (isNaN(Number(amount)) ? 1 : Number(amount)) * units[unit.toLowerCase().replace(/s$/, '')];
+    });
+    return age ? Date.now() - age : null;
+  }
+
+  function captureNetworkActivityRows(rows, playerIndex, typeIndex, timeIndex, messageIndex,
+                                      storageMode, criteria) {
+    for (var i = rows.length - 1; i >= 0; i--) {
+      var row = rows[i];
+      var playerText = row.children[playerIndex] ? row.children[playerIndex].textContent.trim() : '';
+      var type = row.children[typeIndex] ? row.children[typeIndex].textContent.trim() : '';
+      if (storageMode === 'filtered' &&
+          (!criteria.filtering || !networkActivityMatches(playerText.toLowerCase(), type, criteria))) {
+        continue;
+      }
+      var id = row.getAttribute('data-id') || row.id || row.textContent.trim();
+      var entry = networkActivityArchive.byId[id];
+      if (!entry) {
+        entry = { id: id };
+        networkActivityArchive.byId[id] = entry;
+        networkActivityArchive.entries.unshift(entry);
+        entry.order = ++networkActivityArchive.sequence;
+        entry.capturedAt = Date.now();
+        entry.timeIndex = timeIndex;
+        entry.eventTime = timeIndex < 0 || !row.children[timeIndex] ? null :
+          networkActivityEventTime(row.children[timeIndex].textContent.trim());
+        entry.html = row.outerHTML;
+        entry.playerText = playerText;
+        entry.player = entry.playerText.toLowerCase();
+        entry.type = type;
+        entry.timeText = timeIndex < 0 || !row.children[timeIndex] ? '' :
+          row.children[timeIndex].textContent.trim();
+        entry.message = messageIndex < 0 || !row.children[messageIndex] ? '' :
+          row.children[messageIndex].textContent.trim();
+      }
+    }
+  }
+
+  function ensureNetworkActivityVisibilityStyle() {
+    if (document.querySelector('style[data-streamliner-network-activity-visibility]')) return;
+    var style = document.createElement('style');
+    style.setAttribute('data-cm-helper', 'true');
+    style.setAttribute('data-streamliner-network-activity-visibility', 'true');
+    // The search control itself keeps Scala's list hidden even if Scala
+    // replaces its subtree before our MutationObserver can render again.
+    style.textContent = '.modal[data-streamliner-network-activity-filtering] .networkActivity,' +
+      '.modal:has([data-streamliner-network-activity-filters] input:not(:placeholder-shown)) ' +
+      '.networkActivity,' +
+      '.modal:has([data-streamliner-network-activity-type] option:checked:not([value=""])) ' +
+      '.networkActivity' +
+      '{display:none!important;}';
+    document.head.appendChild(style);
+  }
+
+  function networkActivityFilterCriteria(controls) {
     var terms = controls.querySelector('input').value.toLowerCase().split(/[;,\n]+/).map(function (term) {
       return term.trim();
     }).filter(Boolean);
-    var selectedType = controls.querySelector('select').value;
-    var visible = 0;
-    rows.forEach(function (row) {
-      var player = row.children[playerIndex] ? row.children[playerIndex].textContent.toLowerCase() : '';
-      var type = row.children[typeIndex] ? row.children[typeIndex].textContent.trim() : '';
-      var matches = (!terms.length || terms.some(function (term) { return player.indexOf(term) !== -1; })) &&
-        (!selectedType || type === selectedType);
-      row.style.display = matches ? '' : 'none';
-      if (matches) visible++;
+    var selectedType = controls.querySelector('[data-streamliner-network-activity-type]').value;
+    return {
+      filtering: terms.length > 0 || !!selectedType,
+      terms: terms,
+      selectedType: selectedType
+    };
+  }
+
+  function networkActivityMatches(player, type, criteria) {
+    return (!criteria.terms.length || criteria.terms.some(function (term) {
+      return player.indexOf(term) !== -1;
+    })) && (!criteria.selectedType || type === criteria.selectedType);
+  }
+
+  function pruneNetworkActivityArchive(criteria) {
+    var archive = networkActivityArchive;
+    var kept = archive.entries.filter(function (entry) {
+      return criteria.filtering && networkActivityMatches(entry.player, entry.type, criteria);
     });
-    controls.querySelector('span').textContent = visible + ' of ' + rows.length + ' rows';
+    if (kept.length === archive.entries.length) return;
+    archive.entries = kept;
+    archive.byId = Object.create(null);
+    kept.forEach(function (entry) { archive.byId[entry.id] = entry; });
+  }
+
+  function matchingNetworkActivityEntries(controls) {
+    var criteria = networkActivityFilterCriteria(controls);
+    return {
+      filtering: criteria.filtering,
+      entries: networkActivityArchive.entries.filter(function (entry) {
+        return networkActivityMatches(entry.player, entry.type, criteria);
+      }).sort(function (a, b) {
+        var aTime = a.eventTime == null ? a.capturedAt : a.eventTime;
+        var bTime = b.eventTime == null ? b.capturedAt : b.eventTime;
+        return bTime - aTime || b.order - a.order;
+      })
+    };
+  }
+
+  function exportNetworkActivity(controls) {
+    if (!networkActivityArchive) return;
+    var entries = matchingNetworkActivityEntries(controls).entries;
+    if (!entries.length) return;
+    function csvCell(value) {
+      var cell = String(value == null ? '' : value);
+      // Player names and messages come from Scala and may contain spreadsheet formulas.
+      if (/^\s*[=+\-@]/.test(cell)) cell = "'" + cell;
+      return '"' + cell.replace(/"/g, '""') + '"';
+    }
+    var lines = [['Message Type', 'Player', 'Time', 'Message'].map(csvCell).join(',')];
+    entries.forEach(function (entry) {
+      var time = entry.eventTime ? new Date(entry.eventTime).toLocaleString() : entry.timeText;
+      lines.push([entry.type, entry.playerText, time, entry.message].map(csvCell).join(','));
+    });
+    var csv = '\ufeff' + lines.join('\r\n') + '\r\n';
+    var url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = 'streamliner-network-activity-' +
+      new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '') + '.csv';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    nativeSetTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  function filterNetworkActivity(controls, list, header, rows) {
+    var selection = matchingNetworkActivityEntries(controls);
+    var matches = selection.entries;
+    var filtering = selection.filtering;
+    networkActivityArchive.matchCount = matches.length;
+    networkActivityArchive.filtering = filtering;
+    controls.querySelector('[data-streamliner-network-activity-export]').disabled = !matches.length;
+    var modal = controls.closest('.modal');
+    var content = controls.parentNode;
+    var archiveView = content.querySelector('[data-streamliner-network-activity-archive]');
+    // Keep our result list outside Scala's networkActivity subtree; Scala
+    // rebuilds that subtree whenever new activity arrives.
+    if (archiveView && archiveView.parentNode !== content) {
+      content.insertBefore(archiveView, controls.nextSibling);
+    }
+    if (!filtering) {
+      modal.removeAttribute('data-streamliner-network-activity-filtering');
+      list.style.display = '';
+      if (archiveView) archiveView.style.display = 'none';
+      controls.querySelector('[data-streamliner-network-activity-count]').textContent =
+        rows.length + ' current · ' +
+        networkActivityArchive.entries.length +
+        (CONFIG.networkActivityStorageMode === 'filtered' ? ' saved for active filter' : ' saved since opening');
+      return;
+    }
+    ensureNetworkActivityVisibilityStyle();
+    modal.setAttribute('data-streamliner-network-activity-filtering', 'true');
+    if (!archiveView) {
+      archiveView = document.createElement('div');
+      archiveView.setAttribute('data-cm-helper', 'true');
+      archiveView.setAttribute('data-streamliner-network-activity-archive', 'true');
+      content.insertBefore(archiveView, controls.nextSibling);
+    }
+    var visibleEntries = matches.slice(0, networkActivityArchive.visibleCount);
+    var signature = visibleEntries.map(function (entry) { return entry.id; }).join('\u0000');
+    if (networkActivityArchive.rendered !== signature || !archiveView.firstChild) {
+      var previousScrollTop = content.scrollTop;
+      var resultList = list.cloneNode(false);
+      resultList.removeAttribute('style');
+      resultList.setAttribute('data-streamliner-network-activity-results', 'true');
+      resultList.appendChild(header.cloneNode(true));
+      visibleEntries.forEach(function (entry) {
+        var holder = document.createElement('div');
+        holder.innerHTML = entry.html;
+        var copy = holder.firstElementChild;
+        if (copy) {
+          copy.style.display = '';
+          if (entry.eventTime && copy.children[entry.timeIndex]) {
+            copy.children[entry.timeIndex].textContent = new Date(entry.eventTime).toLocaleString();
+          }
+          resultList.appendChild(copy);
+        }
+      });
+      archiveView.replaceChildren(resultList);
+      content.scrollTop = previousScrollTop;
+      networkActivityArchive.rendered = signature;
+    }
+    list.style.display = 'none';
+    archiveView.style.display = '';
+    controls.querySelector('[data-streamliner-network-activity-count]').textContent =
+      'Showing ' + visibleEntries.length +
+      ' of ' + matches.length + ' matching · ' +
+      networkActivityArchive.entries.length +
+      (CONFIG.networkActivityStorageMode === 'filtered' ? ' saved for active filter' : ' saved since opening');
+  }
+
+  // User Activity's objectReference is the only item detail in the list
+  // response. Make the names it does return easier to scan, and say plainly
+  // when Scala returned a count or omitted part of a list.
+  function applyExtendedUserActivity() {
+    var rows = document.querySelectorAll('li.columns.item[data-id]');
+    Array.prototype.forEach.call(rows, function (row) {
+      var details = row.querySelector('.userActivityDetails ul');
+      if (!details) return;
+      var existing = details.querySelector('[data-streamliner-extended-useractivity-item]');
+      if (!CONFIG.extendedUserActivity) {
+        if (existing) existing.remove();
+        return;
+      }
+      var activityRow = null;
+      Array.prototype.some.call(details.children, function (item) {
+        var label = item.querySelector('label');
+        if (label && label.textContent.trim().replace(/\s*:\s*$/, '').toLowerCase() === 'activity') {
+          activityRow = item;
+          return true;
+        }
+        return false;
+      });
+      if (!activityRow) {
+        if (existing) existing.remove();
+        return;
+      }
+      var activityLabel = activityRow.querySelector('label');
+      var reference = activityRow.textContent.replace(activityLabel.textContent, '').trim();
+      var itemText = '';
+      var named = reference.match(/^([a-z][a-z0-9 _-]*)\s+'([^']+)'$/i);
+      var list = reference.match(/^(\d+)\s+items?:\s*([\s\S]*)$/i);
+      var countOnly = reference.match(/^(\d+)\s+([a-z][a-z -]*)$/i);
+      if (named) {
+        itemText = named[1] + ': ' + named[2];
+      } else if (list) {
+        var total = list[1];
+        var names = list[2].trim();
+        var omittedMatch = names.match(/\.\.\.\s*\(\+\s*(\d+)\s+more\)$/i);
+        var omitted = omittedMatch ? omittedMatch[1] : '';
+        var shortened = !!omittedMatch || /[.…]{2,}\s*$/.test(names);
+        if (omittedMatch) names = names.slice(0, omittedMatch.index).trim();
+        names = names.replace(/[.…]+\s*$/, '').trim();
+        itemText = total + (total === '1' ? ' item' : ' items');
+        if (names) itemText += ': ' + names;
+        if (omitted) itemText += ' (' + omitted + ' more not in response)';
+        else if (shortened) itemText += ' (list shortened in response)';
+      } else if (countOnly) {
+        itemText = countOnly[1] + ' ' + countOnly[2] + '; item names were not returned';
+      }
+      if (!itemText) {
+        if (existing) existing.remove();
+        return;
+      }
+      var itemLabel = (list && list[1] !== '1') || (countOnly && countOnly[1] !== '1') ? 'Items' : 'Item';
+      if (!existing) {
+        existing = document.createElement('li');
+        existing.setAttribute('data-cm-helper', 'true');
+        existing.setAttribute('data-streamliner-extended-useractivity-item', 'true');
+        details.appendChild(existing);
+      }
+      var labelNode = existing.querySelector('label');
+      if (!labelNode) {
+        labelNode = document.createElement('label');
+        existing.appendChild(labelNode);
+      }
+      labelNode.textContent = itemLabel + ' :';
+      var valueNode = existing.querySelector('[data-streamliner-extended-useractivity-value]');
+      if (!valueNode) {
+        valueNode = document.createElement('span');
+        valueNode.setAttribute('data-cm-helper', 'true');
+        valueNode.setAttribute('data-streamliner-extended-useractivity-value', 'true');
+        existing.appendChild(valueNode);
+      }
+      var valueText = ' ' + itemText;
+      if (valueNode.textContent !== valueText) valueNode.textContent = valueText;
+    });
   }
 
   function applyPlayerMetadata() {
@@ -5470,7 +5815,8 @@
   // fields keep their config key, because that is what you would type in the
   // file or from the console.
   var FIELD_LABELS = {
-    searchHotkey: 'Search Hotkey'
+    searchHotkey: 'Search Hotkey',
+    networkActivityStorageMode: 'Event storage'
   };
 
   var FIELD_NOTES = {
@@ -5486,7 +5832,8 @@
     darkMode: 'Applies as soon as you save.',
     showHostBadge: 'Adds the host badge to the login page.',
     hostInTitle: 'Puts the host in the tab title, in front of the page name.',
-    darkModeInvertLogos: 'Keeps logos other than Scala\'s legible on a dark page. A saturated mark comes back lighter.'
+    darkModeInvertLogos: 'Keeps logos other than Scala\'s legible on a dark page. A saturated mark comes back lighter.',
+    networkActivityStorageMode: 'Store all data lets you change filters later, but can use a lot of browser memory on busy servers. Store only filtered data keeps events matching the active filter; changing or clearing it discards other saved events.'
   };
 
   // The panel is grouped by feature. Each group has a master switch on its
@@ -5604,8 +5951,16 @@
       title: 'Network Activity Shortcut and Filters',
       master: 'networkActivityFilters',
       blurb: 'Adds Network Activity directly below Player Problems in the compact left menu, ' +
-             'and player-name and message-type filters to the dialog. Filters apply to ' +
-             'rows currently displayed.',
+             'and player-name and message-type filters to the dialog. Events are kept ' +
+             'while the dialog is open, and matching events can be exported as CSV.',
+      always: ['networkActivityStorageMode'],
+      advanced: []
+    },
+    {
+      title: 'Extended UserActivity',
+      master: 'extendedUserActivity',
+      blurb: 'Shows the item names Scala includes in each User Activity reference, and ' +
+             'marks names that Scala omitted or shortened in its response.',
       advanced: []
     },
     {
@@ -5873,6 +6228,21 @@
       }
 
       var val = values[key];
+      if (key === 'networkActivityStorageMode') {
+        var storageSelect = document.createElement('select');
+        [['all', 'Store all data'], ['filtered', 'Store only filtered data']].forEach(function (choice) {
+          var option = document.createElement('option');
+          option.value = choice[0];
+          option.textContent = choice[1];
+          storageSelect.appendChild(option);
+        });
+        storageSelect.value = val === 'filtered' ? 'filtered' : 'all';
+        storageSelect.style.cssText = 'max-width:210px;padding:4px 6px;border:1px solid ' +
+          skin.fieldLine + ';border-radius:4px;background:' + skin.field + ';color:' + skin.text;
+        inputs[key] = storageSelect;
+        row(FIELD_LABELS[key] || key, storageSelect, note, container);
+        return;
+      }
       var el = document.createElement('input');
       if (typeof val === 'boolean') {
         el.type = 'checkbox';
@@ -6430,6 +6800,7 @@
     runFeature('generatePlan', applyGeneratePlan);
     runFeature('playerMetadata', applyPlayerMetadata);
     runFeature('networkActivityFilters', applyNetworkActivityFilters);
+    runFeature('extendedUserActivity', applyExtendedUserActivity);
     runFeature('channelPicker', applyChannelPicker);
     runFeature('workgroupRoot', applyWorkgroupRoot);
     runFeature('userMenu', installUserMenuItem);
